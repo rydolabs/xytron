@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NativeWeb real plugin browser E2E</title>
+<link rel="stylesheet" href="app_resource_style.css">
+<script src="app_resource_script.js"></script>
+</head>
+<body>
+<div id="app-resource-marker" class="app-resource-marker"></div>
+<img id="app-resource-icon" src="app_resource_icon.svg" alt="test">
+<script>
+(async function () {
+  if (window !== window.top) {
+    // Deliberately reload the SAME trusted entry in a child frame.
+    // Its engine-supplied main-frame identity must differ, even when
+    // its URL string and content are byte-for-byte identical.
+    window.parent.postMessage({ kind: "nativeweb-security-probe-ready" }, "*");
+    let outcome = "no-bridge";
+    try {
+      if (typeof xytron !== "undefined") {
+        await xytron.test.checkpoint("security-UNTRUSTED-CALL-EXECUTED");
+        outcome = "allowed";
+      }
+    } catch (error) {
+      outcome = String(error).includes("permission_denied")
+        ? "denied" : "unexpected-error:" + String(error);
+    }
+    window.parent.postMessage({
+      kind: "nativeweb-security-probe",
+      outcome: outcome
+    }, "*");
+    return;
+  }
+  async function fail(message) {
+    try { await xytron.invoke("test.fail", String(message)); }
+    catch (_) { /* the WebView may already be closing */ }
+  }
+  function ensure(condition, message) {
+    if (!condition) throw new Error(message);
+  }
+  try {
+    // Both engines reload the exact same URL, then inject retired-token
+    // wire envelopes. CEF never exposes the actual token to page JavaScript.
+    const webview2 = window.chrome && window.chrome.webview &&
+      typeof window.chrome.webview.postMessage === "function";
+    if (webview2) {
+      const currentSession = await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("WebView2 document-session handshake timed out")),
+          8000);
+        window.chrome.webview.addEventListener("message", function onMessage(event) {
+          if (!event.data || event.data.type !== "nativeweb_session") return;
+          clearTimeout(timer);
+          window.chrome.webview.removeEventListener("message", onMessage);
+          resolve(event.data.token);
+        });
+      });
+      ensure(/^[0-9a-f]{48}$/.test(currentSession),
+             "Invalid WebView2 document-session token");
+      const prefix = "xytron-e2e-retired-session:";
+      const retiredSession = window.name.indexOf(prefix) === 0
+        ? window.name.slice(prefix.length) : null;
+      if (!retiredSession) {
+        window.name = prefix + currentSession;
+        location.reload(); // identical URL; must still rotate the token
+        return;
+      }
+      window.name = "";
+      ensure(/^[0-9a-f]{48}$/.test(retiredSession),
+             "Retired session token was lost across same-URL reload");
+      ensure(retiredSession !== currentSession,
+             "Document session did not rotate on same-URL reload");
+      // A fresh WebView2 document starts JS request IDs from 1. Submit
+      // request #1, wait for request #2 to return (ensures native has already
+      // registered #1), then attempt to cancel #1 with the retired token.
+      const liveRequest = xytron.invokeWithOptions(
+        "test.cancel.delay", {timeoutMs:3000}, 350);
+      ensure(await xytron.test.replay.count() === 0,
+             "Replay fixture was already modified");
+      window.chrome.webview.postMessage({
+        type: "cancel", id: "1", session: retiredSession
+      });
+      ensure(await liveRequest === 350,
+             "Retired document token cancelled a live request");
+
+      window.chrome.webview.postMessage({
+        type: "request", id: "990001", method: "test.replay.bump",
+        args: [], session: retiredSession
+      });
+      window.chrome.webview.postMessage({
+        type: "cancel", id: "990001", session: retiredSession
+      });
+      window.chrome.webview.postMessage({
+        type: "event", event: "test.message.ping",
+        payload: {value:42}, session: retiredSession
+      });
+      // The legitimate call is sent over the same WebView2 channel after
+      // the malicious messages, so the observation follows their dispatch.
+      ensure(await xytron.test.replay.count() === 0,
+             "Retired document-session request reached native dispatch");
+      ensure(await xytron.test.message.count() === 0,
+             "Retired document-session event reached native callback");
+      ensure(await xytron.test.replay.bump() === 1,
+             "Current document was blocked after stale IPC replay");
+      await xytron.test.checkpoint("security-stale-session-replay-blocked");
+    } else {
+      // E2E-only CEF V8 hooks send real renderer-to-browser CefProcessMessages
+      // from the newly loaded document, but carrying its predecessor's token.
+      ensure(typeof native !== "undefined" &&
+             typeof native.testCaptureRetiredSession === "function" &&
+             typeof native.testReplayRetiredSession === "function",
+             "CEF retired-session test hook unavailable");
+      const marker = "xytron-e2e-cef-session-reloaded";
+      if (window.name !== marker) {
+        ensure(await xytron.test.replay.count() === 0,
+               "CEF replay fixture changed before capture");
+        ensure(native.testCaptureRetiredSession(),
+               "CEF session token not issued to the renderer");
+        window.name = marker;
+        location.reload();
+        return;
+      }
+      window.name = "";
+      ensure(await xytron.test.replay.count() === 0,
+             "CEF replay fixture changed after navigation");
+      // CEF IDs continue across reloads. Use the actual ID of a live request
+      // to ensure an old session cannot cancel an unrelated current promise.
+      const live = native.invokeCancelableRaw("test.cancel.delay", 350);
+      ensure(await xytron.test.replay.count() === 0,
+             "CEF current document request failed");
+      ensure(native.testReplayRetiredSession("cancel", live.id, ""),
+             "CEF old cancel IPC not emitted");
+      ensure(await live.promise === 350,
+             "CEF old session cancelled the current request");
+      ensure(native.testReplayRetiredSession(
+               "request", "990001", "test.replay.bump"),
+             "CEF old request IPC not emitted");
+      ensure(native.testReplayRetiredSession(
+               "event", "0", "test.message.ping"),
+             "CEF old event IPC not emitted");
+      // Valid traffic on the same IPC channel orders subsequent observation.
+      ensure(await xytron.test.replay.count() === 0,
+             "CEF old-session request reached native dispatch");
+      ensure(await xytron.test.message.count() === 0,
+             "CEF old-session event reached native callback");
+      ensure(await xytron.test.replay.bump() === 1,
+             "CEF current document rejected after replay");
+      await xytron.test.checkpoint("security-stale-session-replay-blocked");
+    }
+    // Both engines expose one-way JS <-> native events, including raw bytes.
+    ensure(typeof xytron.postMessage === "function" &&
+           typeof xytron.onMessage === "function" &&
+           typeof xytron.offMessage === "function",
+           "One-way message API missing");
+    const awaitMessage = (channel, send) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        xytron.offMessage(id);
+        reject(new Error("One-way message timeout: " + channel));
+      }, 5000);
+      const id = xytron.onMessage(channel, data => {
+        clearTimeout(timer);
+        xytron.offMessage(id);
+        resolve(data);
+      });
+      try { send(); }
+      catch (error) { clearTimeout(timer); xytron.offMessage(id); reject(error); }
+    });
+    const pong = await awaitMessage("test.message.pong", () =>
+      xytron.postMessage("test.message.ping", {value:42}));
+    ensure(await xytron.test.message.count() === 1,
+           "Only the current session should have emitted one ping");
+    ensure(pong instanceof ArrayBuffer &&
+           Array.from(new Uint8Array(pong)).join(",") === "0,127,255",
+           "Native postMessage Binary was not an ArrayBuffer");
+    const backing = new Uint8Array([99,0,127,255,99]);
+    const view = backing.subarray(1, 4);
+    const checked = await awaitMessage("test.message.binary.ok", () =>
+      xytron.postMessage("test.message.binary", view));
+    ensure(checked && checked.valid === true,
+           "Sliced JS Uint8Array did not reach native as Binary");
+    const direct = await xytron.test.binaryEcho(view);
+    ensure(direct instanceof ArrayBuffer &&
+           Array.from(new Uint8Array(direct)).join(",") === "0,127,255",
+           "TypedArray RPC roundtrip failed");
+    const nested = await xytron.test.binaryNested({
+      frame: new DataView(backing.buffer, 1, 3),
+      children: [view]
+    });
+    ensure(nested.frame instanceof ArrayBuffer &&
+           nested.children[0] instanceof ArrayBuffer &&
+           Array.from(new Uint8Array(nested.frame)).join(",") === "0,127,255" &&
+           Array.from(new Uint8Array(nested.children[0])).join(",") === "0,127,255",
+           "Nested DataView/Uint8Array RPC conversion failed");
+    await xytron.test.checkpoint("binary-typed-view-parity-ok");
+    await xytron.test.checkpoint("oneway-message-binary-ok");
+
+    // Real browser: deadline and AbortSignal must settle the JS Promise,
+    // cancel the native request ID and preserve unrelated subsequent calls.
+    ensure(typeof xytron.invokeWithOptions === "function",
+           "Missing cancellable JS bridge API");
+    let timedOut = false;
+    let deadlineOutcome = "resolved";
+    try {
+      deadlineOutcome = String(await xytron.invokeWithOptions(
+        "test.cancel.delay",{timeoutMs:100},5000));
+    } catch(e) {
+      deadlineOutcome = String(e);
+      timedOut = /request_timeout|request_cancelled/.test(deadlineOutcome);
+    }
+    ensure(timedOut,"Timeout did not reject slow request: " + deadlineOutcome);
+    const aborter=new AbortController();
+    const abortedCall=xytron.invokeWithOptions(
+      "test.cancel.delay",{signal:aborter.signal},5000);
+    aborter.abort();
+    let aborted=false;
+    try { await abortedCall; }
+    catch(e){aborted=String(e).includes("request_cancelled");}
+    ensure(aborted,"AbortSignal did not reject request");
+    ensure(await xytron.math.add(2,3)===5,
+           "Cancellation corrupted unrelated request");
+    await xytron.test.checkpoint("request-cancel-verified");
+  // The scheme itself must serve real bytes, enforce MIME, and return 404
+  // for an undeclared resource. file:// legacy E2E bypasses these checks.
+  if (location.protocol === "app:") {
+    ensure(window.__xytronResourceScript === "loaded",
+           "relative app:// external JS not executed");
+    const element = document.getElementById("app-resource-marker");
+    ensure(getComputedStyle(element).getPropertyValue(
+               "--xytron-app-style").trim() === "loaded",
+           "relative app:// CSS not applied");
+    const icon = await fetch("app://desktop/app_resource_icon.svg");
+    ensure(icon.status === 200 &&
+           (icon.headers.get("content-type") || "").includes("image/svg+xml"),
+           "relative app:// image resource MIME/status failed");
+    ensure((await icon.text()).includes("<svg"),
+           "app:// image data mismatch");
+    // A separate plugin host is a distinct browser origin. The resource
+    // exists, but script from app://desktop must not read its bytes.
+    let leaked = false;
+    try {
+      const foreign = await fetch("app://camera/ui/panel.html");
+      leaked = foreign.ok && (await foreign.text()).includes(
+        "private-camera-resource");
+    } catch (_) { /* CORS blocked, expected */ }
+    ensure(!leaked, "app:// host separation failed: camera bytes leaked");
+    const child = await fetch("app://desktop/plugin_untrusted_child.html");
+    ensure(child.ok && child.status === 200,
+           "app:// child resource not served");
+    ensure((child.headers.get("content-type") || "").includes("text/html"),
+           "app:// HTML MIME missing");
+    ensure((await child.text()).includes("nativeweb-security-probe-ready"),
+           "app:// child resource bytes mismatch");
+    const missing = await fetch("app://desktop/no-such-file.json");
+    ensure(missing.status === 404,
+           "app:// unknown resource must return 404");
+  }
+    // This is a real dynamically-loaded library factory, not camera.open's
+    // host-side mock object from the generic bridge integration test.
+    const counter = await xytron.plugin.open(77);
+    ensure(counter && typeof counter.value === "function", "missing native proxy");
+    ensure(await counter.value() === 77, "argument-aware factory did not receive 77");
+    ensure(await counter.add(5) === 82, "C ABI object method returned wrong value");
+
+    let objectError = false;
+    try { await counter.fail(); }
+    catch (error) { objectError = String(error).includes("counter_failure"); }
+    ensure(objectError, "plugin object error did not reach Promise rejection");
+
+    let factoryError = false;
+    try { await xytron.plugin.open("invalid"); }
+    catch (error) {
+      factoryError = String(error).includes("invalid_factory_arguments");
+    }
+    ensure(factoryError, "invalid factory arguments did not reject");
+    // Actual second local document (not the trusted entry). Try to call
+    // the real native checkpoint from a child frame. There must be no
+    // native-side side effect even if the engine injects the bridge API.
+    async function probeChild(src) {
+      const frame = document.createElement("iframe");
+      frame.src = src;
+      frame.style.display = "none";
+      const childResult = new Promise(resolve => {
+        let frameReady = false;
+        const timer = setTimeout(() => {
+          window.removeEventListener("message", onChildMessage);
+          resolve(frameReady ? "no-response" : "frame-never-loaded");
+        }, 7000);
+        function onChildMessage(event) {
+          if (event.source !== frame.contentWindow || !event.data)
+            return;
+          if (event.data.kind === "nativeweb-security-probe-ready") {
+            frameReady = true;
+            return;
+          }
+          if (event.data.kind !== "nativeweb-security-probe")
+            return;
+          clearTimeout(timer);
+          window.removeEventListener("message", onChildMessage);
+          resolve(frameReady ? event.data.outcome : "missing-probe-ready");
+        }
+        window.addEventListener("message", onChildMessage);
+      });
+      document.body.appendChild(frame);
+      const outcome = await childResult;
+      frame.remove();
+      ensure(outcome === "denied" ||
+             outcome === "no-bridge" ||
+             outcome === "no-response",
+             "untrusted child frame " + src + " reached native API: " + outcome);
+    }
+    // A different local file and the exact same trusted entry must both
+    // fail to invoke a native-side method from a non-main frame.
+    await probeChild("plugin_untrusted_child.html");
+    await xytron.test.checkpoint("security-untrusted-frame-blocked");
+    await probeChild("plugin_bridge_test.html");
+    await xytron.test.checkpoint("security-same-entry-iframe-blocked");
+    await xytron.test.checkpoint("plugin-js-verified");
+
+    ensure(await xytron.test.plugin.busy() === true,
+      "live plugin object did not block unload");
+    ensure(await counter.value() === 82,
+      "plugin object stopped working during unload quiesce");
+
+    ensure(await counter.dispose() === true, "native dispose failed");
+    let releasedError = false;
+    try { await counter.value(); }
+    catch (error) {
+      releasedError = String(error).includes("native_object_not_found");
+    }
+    ensure(releasedError, "disposed object remained callable");
+
+    ensure(await xytron.test.plugin.unload() === true,
+      "plugin unload after dispose failed");
+    // This callback closes the native browser. Its response need not survive.
+    try { await xytron.test.plugin.done(); }
+    catch (_) { /* expected if browser closes during response */ }
+  } catch (error) {
+    await fail(error && error.stack ? error.stack : String(error));
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "xytronfixture",
+  "version": "1.2.3",
+  "runtime": "native",
+  "entry": {
+    "win-x64": "bin/win-x64/xytronfixture.dll",
+    "linux-x64": "bin/linux-x64/libxytronfixture.so"
+  }
+}

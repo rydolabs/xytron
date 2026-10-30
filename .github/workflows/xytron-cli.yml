@@ -1,0 +1,81 @@
+name: Xytron CLI Bootstrap
+on:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python for portable artifact verification
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Configure
+        run: cmake -S . -B build-cli -DNATIVEWEB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build native CLI separately
+        run: cmake --build build-cli --config Release --target xytron
+      - name: Scaffold regression
+        run: ctest --test-dir build-cli -C Release -R "^cli.scaffold$" --output-on-failure
+      - name: Set up .NET 8 for generated C# plugin verification
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build NativeWeb Core SDK for generated plugin
+        run: cmake --build build-cli --config Release --target nativeweb_core
+      - name: Install generated SDK
+        run: cmake --install build-cli --config Release --prefix "${{ github.workspace }}/build-cli/sdk"
+      - name: Verify installed Core SDK through xytron doctor
+        run: |
+          cmake -E chdir . "${{ github.workspace }}/build-cli/${{ matrix.os == 'windows-latest' && 'Release/xytron.exe' || 'xytron' }}" doctor --sdk "${{ github.workspace }}/build-cli/sdk"
+      - name: Compile generated plugin through native xytron CLI
+        run: cmake -E chdir build-cli/xytron-cli-smoke "${{ github.workspace }}/build-cli/${{ matrix.os == 'windows-latest' && 'Release/xytron.exe' || 'xytron' }}" plugin build camera --sdk "${{ github.workspace }}/build-cli/sdk"
+      - name: Configure plugin from xytron scaffold
+        run: cmake -S build-cli/xytron-cli-smoke/plugins/camera -B build-cli/generated-camera -DCMAKE_PREFIX_PATH="${{ github.workspace }}/build-cli/sdk"
+      - name: Build real plugin DLL or SO from generated template
+        run: cmake --build build-cli/generated-camera --config Release
+
+      - name: Compile generated plugin loader regression
+        run: cmake --build build-cli --config Release --target nativeweb_generated_xytron_plugin_regression
+      - name: Load CLI generated DLL or SO and invoke real C ABI
+        run: |
+          cmake -E chdir . "${{ github.workspace }}/build-cli/tests/plugin/${{ matrix.os == 'windows-latest' && 'Release/nativeweb_generated_xytron_plugin_regression.exe' || 'nativeweb_generated_xytron_plugin_regression' }}" "${{ github.workspace }}/build-cli/xytron-cli-smoke/plugins/camera/build/${{ matrix.os == 'windows-latest' && 'Release/camera.dll' || 'libcamera.so' }}"
+      - name: Native app / 3-language template, package and consumer regression
+        run: python tools/cli/test_artifacts.py --xytron "${{ github.workspace }}/build-cli/${{ matrix.os == 'windows-latest' && 'Release/xytron.exe' || 'xytron' }}" --repo "${{ github.workspace }}" --sdk "${{ github.workspace }}/build-cli/sdk" --require-dotnet
+
+      - name: Managed Python AST and trusted C# Reflection bindings
+        run: python tools/cli/test_managed_bindings.py --xytron "${{ github.workspace }}/build-cli/sdk/bin/${{ matrix.os == 'windows-latest' && 'xytron.exe' || 'xytron' }}" --require-dotnet
+
+      - name: Python and trusted C# class descriptor / mock bridge contract
+        run: python tools/cli/test_class_bindings.py --xytron "${{ github.workspace }}/build-cli/sdk/bin/${{ matrix.os == 'windows-latest' && 'xytron.exe' || 'xytron' }}" --require-dotnet
+
+      - name: Python managed-object host ownership and lifecycle regression
+        run: python bindings/python/tests/test_object_host.py
+
+      - name: .NET managed-object host ownership and lifecycle regression
+        run: dotnet run --configuration Release --project bindings/dotnet/HostTests/ObjectHostSmoke.csproj
+
+      - name: Build separate .NET 8 JSONL object worker
+        run: dotnet build bindings/dotnet/HostProcessDemo/HostProcessDemo.csproj --configuration Release --nologo
+
+      - name: Real Python and .NET subprocess IPC plus generated JS wrapper
+        run: python tests/ipc/test_host_process.py --dotnet-dll "${{ github.workspace }}/bindings/dotnet/HostProcessDemo/bin/Release/net8.0/HostProcessDemo.dll"
+
+      - name: Compile C++11 IPC ProcessBroker regression
+        run: cmake --build build-cli --config Release --target nativeweb_process_broker_regression
+
+      - name: C++ ProcessBroker to real Python and .NET JSONL workers
+        run: >
+          python tests/ipc/run_native_broker.py
+          --binary "${{ github.workspace }}/build-cli/tests/core/${{ matrix.os == 'windows-latest' && 'Release/nativeweb_process_broker_regression.exe' || 'nativeweb_process_broker_regression' }}"
+          --fixture "${{ github.workspace }}/tests/ipc/broker_fixture.py"
+          --dotnet-dll "${{ github.workspace }}/bindings/dotnet/HostProcessDemo/bin/Release/net8.0/HostProcessDemo.dll"
+
+      - name: Native packaged managed C++ bridge to real Python worker
+        run: |
+          cmake --build build-cli --config Release --target nativeweb_managed_bridge_integration
+          ctest --test-dir build-cli -C Release -R '^core\\.managed_bridge$' --output-on-failure

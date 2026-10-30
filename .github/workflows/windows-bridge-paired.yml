@@ -1,0 +1,162 @@
+name: Windows Bridge Paired Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      soak_cycles:
+        description: 'Extended SharedBuffer soak cycles, 4..500; each transfers 32 MiB'
+        required: false
+        type: number
+        default: 100
+  pull_request:
+    paths:
+      - '.github/workflows/windows-bridge-paired.yml'
+      - 'src/**'
+      - 'include/**'
+      - 'tests/integration/cef/**'
+      - 'tests/integration/webview2/**'
+      - 'tools/run_bridge_benchmark.py'
+      - 'tools/compare_bridge_benchmarks.py'
+
+permissions:
+  contents: read
+
+jobs:
+  paired:
+    name: windows-2022-cef-webview2-paired
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore pinned Windows CEF cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/cef/windows/archive
+            .cache/cef/windows/extracted
+          key: cef-windows64-144.0.36-g78619fd-runtime-v2
+          restore-keys: |
+            cef-windows64-144.0.36-g78619fd
+      - name: Download pinned Windows CEF
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $cef = & ./tools/bootstrap_windows.ps1 | Select-Object -Last 1
+          "CEF_ROOT=$cef" >> $env:GITHUB_ENV
+      - name: Download pinned WebView2 SDK
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Web.WebView2 -Version 1.0.4258.31 -OutputDirectory .cache/webview2 -NonInteractive
+          $sdk = (Resolve-Path .cache/webview2/Microsoft.Web.WebView2.1.0.4258.31).Path
+          "WEBVIEW2_ROOT=$sdk" >> $env:GITHUB_ENV
+      - name: Build both engines on SAME runner
+        shell: pwsh
+        run: |
+          cmake -S tests/integration/cef -B build/cef "-DCEF_ROOT=$env:CEF_ROOT"
+          cmake --build build/cef --config Release --parallel 4
+          cmake -S tests/integration/webview2 -B build/webview2 "-DWEBVIEW2_ROOT=$env:WEBVIEW2_ROOT"
+          cmake --build build/webview2 --config Release --parallel 4
+      - name: Native-to-JS SharedBuffer probe (experimental)
+        shell: pwsh
+        run: |
+          & build/webview2/bin/nativeweb_webview2_sharedbuffer_probe.exe |
+            Tee-Object -FilePath build/sharedbuffer-probe.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Renderer crash and recovery E2E (experimental)
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          & build/webview2/bin/nativeweb_webview2_process_failure_probe.exe |
+            Tee-Object -FilePath build/renderer-failure-probe.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Browser process hard crash and fresh-profile controller recovery
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          & build/webview2/bin/nativeweb_webview2_browser_process_crash_probe.exe |
+            Tee-Object -FilePath build/browser-process-crash-probe.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Two-WebView SharedBuffer quota isolation E2E
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          & build/webview2/bin/nativeweb_webview2_sharedbuffer_multi_probe.exe |
+            Tee-Object -FilePath build/sharedbuffer-multi-probe.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: SharedBuffer reload and memory-pressure smoke
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          & build/webview2/bin/nativeweb_webview2_sharedbuffer_soak_probe.exe --cycles 4 |
+            Tee-Object -FilePath build/sharedbuffer-soak-probe.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Longer PR SharedBuffer soak with renderer process memory
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        timeout-minutes: 12
+        run: |
+          & build/webview2/bin/nativeweb_webview2_sharedbuffer_soak_probe.exe --cycles 100 |
+            Tee-Object -FilePath build/sharedbuffer-soak-100.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Summarize full WebView2 process-group memory samples
+        shell: pwsh
+        run: |
+          python tools/summarize_webview2_soak.py --log build/sharedbuffer-soak-probe.log --output-dir build/bridge-paired/soak-4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path build/sharedbuffer-soak-100.log) {
+            python tools/summarize_webview2_soak.py --log build/sharedbuffer-soak-100.log --output-dir build/bridge-paired/soak-100
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Extended memory-pressure soak (manual only)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          $cycles = [int]'${{ inputs.soak_cycles }}'
+          if ($cycles -lt 4 -or $cycles -gt 500) { throw 'soak_cycles must be 4..500' }
+          & build/webview2/bin/nativeweb_webview2_sharedbuffer_soak_probe.exe --cycles $cycles |
+            Tee-Object -FilePath build/sharedbuffer-soak-extended.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Summarize same-page SharedBuffer vs Base64 transport
+        shell: pwsh
+        run: |
+          python tools/summarize_sharedbuffer_probe.py --log build/sharedbuffer-probe.log --output-dir build/bridge-paired
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Three paired rounds, alternating engine order
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $orders = @(
+            @('cef','webview2'),
+            @('webview2','cef'),
+            @('cef','webview2')
+          )
+          for ($i=0; $i -lt $orders.Count; $i++) {
+            $round = $i + 1
+            foreach ($engine in $orders[$i]) {
+              $out = "build/bridge-paired/round-$round-$engine"
+              python tools/run_bridge_benchmark.py --engine $engine --build-dir "build/$engine" --output-dir $out --warmup 100 --samples 300 --timeout 130
+              if ($LASTEXITCODE -ne 0) { throw "Bridge benchmark failed: $engine round $round" }
+            }
+          }
+      - name: Summarize matched-runner sample pairs
+        shell: pwsh
+        run: |
+          python tools/compare_bridge_benchmarks.py --root build/bridge-paired --rounds 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload raw samples and paired comparisons
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xytron-windows-cef-webview2-paired-${{ github.sha }}
+          path: |
+            build/bridge-paired/**
+            build/sharedbuffer-probe.log
+            build/renderer-failure-probe.log
+            build/browser-process-crash-probe.log
+            build/sharedbuffer-multi-probe.log
+            build/sharedbuffer-soak-probe.log
+            build/sharedbuffer-soak-100.log
+            build/sharedbuffer-soak-extended.log
+          if-no-files-found: warn

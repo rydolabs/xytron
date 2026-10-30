@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Untrusted child</title></head>
+<body><script>
+(async function () {
+  // A ready handshake proves the second real document executed its script.
+  // An absent frame or malformed path cannot pass through a timeout.
+  window.parent.postMessage({kind: "nativeweb-security-probe-ready"}, "*");
+  let outcome = "no-bridge";
+  try {
+    if (typeof xytron !== "undefined") {
+      await xytron.test.checkpoint("security-UNTRUSTED-CALL-EXECUTED");
+      outcome = "allowed";
+    }
+  } catch (error) {
+    outcome = String(error).includes("permission_denied")
+      ? "denied"
+      : "unexpected-error:" + String(error);
+  }
+  window.parent.postMessage({
+    kind: "nativeweb-security-probe",
+    outcome: outcome
+  }, "*");
+})();
+</script></body></html>

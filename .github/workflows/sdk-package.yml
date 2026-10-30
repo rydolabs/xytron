@@ -1,0 +1,31 @@
+name: Installed SDK Consumer
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  installed-consumer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SDK
+        run: cmake -S . -B build-sdk -DNATIVEWEB_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/sdk-install
+      - name: Build SDK
+        run: cmake --build build-sdk --config Release --parallel 2
+      - name: Install SDK
+        run: cmake --install build-sdk --config Release
+      - name: Relocate installed SDK
+        run: mv sdk-install sdk-relocated
+      - name: Configure independent consumer
+        run: cmake -S examples/sdk_consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=${{ github.workspace }}/sdk-relocated
+      - name: Build independent consumer
+        run: cmake --build build-consumer --config Release --parallel 2
+      - name: Run installed consumer
+        run: ctest --test-dir build-consumer -C Release --output-on-failure

@@ -1,0 +1,58 @@
+name: Xytron Public A1 hardening 4-OS CI
+'on':
+  push:
+    branches: [nativeweb/a1-public-hardening-macos-20261029]
+  pull_request:
+    paths:
+      - '.github/workflows/xytron-public-a1-hardening.yml'
+      - 'CMakeLists.txt'
+      - 'tools/cli/**'
+      - 'bindings/python/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: xytron-public-a1-hardening-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  core-cli-worker:
+    name: A1-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Configure C++11 Core and CLI
+        run: cmake -S . -B build/a1-public -DNATIVEWEB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=11
+      - name: Build C++11 Core and CLI regressions
+        run: cmake --build build/a1-public --config Release --parallel 3
+      - name: Run all CTest Core, plugin and CLI regressions
+        run: ctest --test-dir build/a1-public -C Release --output-on-failure --timeout 100
+      - name: Run Python Worker and wrapper protocol regressions
+        run: python -m unittest discover -s bindings/python/tests -p "test_*.py" -v
+      - name: Install Core SDK
+        run: cmake --install build/a1-public --config Release --prefix "${{ github.workspace }}/a1-public-sdk"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test generated C++ Python and Csharp Core-only backend workflow
+        run: >
+          cmake
+          "-DXYTRON=${{ github.workspace }}/build/a1-public/${{ matrix.os == 'windows-2022' && 'Release/xytron.exe' || 'xytron' }}"
+          "-DSDK=${{ github.workspace }}/a1-public-sdk"
+          "-DTEST_ROOT=${{ github.workspace }}/build/a1-app-workflow"
+          -P tools/cli/test_app_workflow.cmake
+      - name: Configure independent SDK consumer
+        run: cmake -S examples/sdk_consumer -B build/a1-consumer -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/a1-public-sdk"
+      - name: Build independent SDK consumer
+        run: cmake --build build/a1-consumer --config Release --parallel 2
+      - name: Verify independent SDK consumer
+        run: ctest --test-dir build/a1-consumer -C Release --output-on-failure --timeout 90

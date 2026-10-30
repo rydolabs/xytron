@@ -1,0 +1,111 @@
+name: NativeWeb CEF Windows Bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/browser/cef/**"
+      - "src/browser/common/**"
+      - "src/core/**"
+      - "src/plugin/**"
+      - "src/webview.cpp"
+      - "include/nativeweb/**"
+      - "tests/integration/cef/**"
+      - ".github/workflows/cef-windows-bridge.yml"
+      - "tools/cef/bootstrap_windows.ps1"
+  workflow_dispatch:
+
+env:
+  CEF_WIN_CACHE_DIR: ${{ github.workspace }}\.cache\cef\windows\archive
+  CEF_WIN_EXTRACT_DIR: ${{ github.workspace }}\.cache\cef\windows\extracted
+
+jobs:
+  bridge:
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache pinned CEF Windows runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CEF_WIN_CACHE_DIR }}
+            ${{ env.CEF_WIN_EXTRACT_DIR }}
+          key: cef-windows64-144.0.36-g78619fd-runtime-v2
+          restore-keys: |
+            cef-windows64-144.0.36-g78619fd
+
+      - name: Bootstrap CEF Windows distribution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = & .\tools\cef\bootstrap_windows.ps1 -CacheDir "$env:CEF_WIN_CACHE_DIR" -ExtractDir "$env:CEF_WIN_EXTRACT_DIR" | Select-Object -Last 1
+          if (-not (Test-Path (Join-Path $root "CMakeLists.txt"))) { throw "Invalid CEF root: $root" }
+          "CEF_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "CEF_ROOT=$root"
+
+      - name: Configure NativeWeb CEF Windows integration
+        shell: pwsh
+        run: cmake -S tests/integration/cef -B cef-windows-build -A x64 -DCEF_ROOT="$env:CEF_ROOT" -DUSE_SANDBOX=OFF
+
+      - name: Build NativeWeb CEF Windows integration
+        shell: pwsh
+        run: |
+          cmake --build cef-windows-build --config Release --target nativeweb_cef_bridge_integration --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build cef-windows-build --config Release --target nativeweb_cef_multi_webview_integration --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify CEF Windows runtime layout
+        shell: pwsh
+        run: |
+          $bin = Resolve-Path "cef-windows-build/bin"
+          $required = @(
+            "nativeweb_cef_bridge_integration.exe",
+            "nativeweb_cef_multi_webview_integration.exe",
+            "libcef.dll",
+            "icudtl.dat"
+          )
+          foreach ($file in $required) {
+            if (-not (Test-Path (Join-Path $bin $file))) { throw "Missing CEF runtime file: $file" }
+          }
+          if (-not (Test-Path (Join-Path $bin "locales"))) { throw "Missing CEF locales directory" }
+
+      - name: Run real Windows CEF bridge contract
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = "Stop"
+          $html = (Resolve-Path "tests/integration/cef/bridge_test.html").Path.Replace("\", "/")
+          $url = "file:///$html"
+          $exe = (Resolve-Path "cef-windows-build/bin/nativeweb_cef_bridge_integration.exe").Path
+          & $exe "--no-sandbox" "--url=$url"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Dump Windows CEF diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "=== CEF diagnostic logs ==="
+          Get-ChildItem -Path . -Recurse -File -Include "*.log","*.dmp" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "--- $($_.FullName) ---"
+            if ($_.Extension -eq ".log") {
+              Get-Content $_.FullName -Tail 400 -ErrorAction SilentlyContinue
+            } else {
+              Write-Host "dump-size=$($_.Length)"
+            }
+          }
+
+      - name: Run real Windows CEF multi-WebView isolation
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = "Stop"
+          $html = (Resolve-Path "tests/integration/cef/multi_webview_test.html").Path.Replace("\", "/")
+          $url = "file:///$html"
+          $exe = (Resolve-Path "cef-windows-build/bin/nativeweb_cef_multi_webview_integration.exe").Path
+          & $exe "--no-sandbox" "--url=$url"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

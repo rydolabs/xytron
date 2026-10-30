@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NativeWeb CEF Multi WebView Test</title>
+</head>
+<body>
+<script>
+const viewId =
+  new URLSearchParams(location.search).get("id");
+
+window.ui = {
+  identity() {
+    return viewId;
+  }
+};
+
+(async function () {
+  async function fail(message) {
+    try {
+      await native.invoke(
+        "test.fail",
+        "[" + viewId + "] " + String(message)
+      );
+    } catch (_) {
+    }
+  }
+
+  try {
+    if (viewId !== "A" && viewId !== "B") {
+      await fail("invalid view id");
+      return;
+    }
+
+    const nativeId =
+      await native.invoke("test.identity");
+
+    if (nativeId !== viewId) {
+      await fail(
+        "native identity crossed: " +
+        String(nativeId)
+      );
+      return;
+    }
+
+    const subscription = native.on(
+      "isolation.event",
+      (payload) => {
+        if (!payload || payload.id !== viewId) {
+          fail(
+            "received event for another WebView: " +
+            JSON.stringify(payload)
+          );
+          return;
+        }
+
+        native.invoke(
+          "test.eventReceived",
+          viewId
+        ).catch((error) => {
+          fail(error && error.stack
+            ? error.stack
+            : String(error));
+        });
+      }
+    );
+
+    await native.invoke(
+      "test.ready",
+      viewId
+    );
+
+    let status = null;
+
+    for (let attempt = 0; attempt < 200; ++attempt) {
+      status =
+        await native.invoke("test.status");
+
+      if (status && status.done) {
+        break;
+      }
+
+      await new Promise(
+        (resolve) => setTimeout(resolve, 10)
+      );
+    }
+
+    native.off(subscription);
+
+    if (
+      !status ||
+      status.done !== true ||
+      status.success !== true
+    ) {
+      await fail(
+        status && status.message
+          ? status.message
+          : "multi-WebView isolation timeout"
+      );
+      return;
+    }
+
+    await native.invoke(
+      "test.done",
+      viewId
+    );
+  } catch (error) {
+    await fail(
+      error && error.stack
+        ? error.stack
+        : String(error)
+    );
+  }
+})();
+</script>
+</body>
+</html>

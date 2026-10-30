@@ -1,0 +1,33 @@
+name: Core Regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: core-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DNATIVEWEB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Regression
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Repeated async cancellation and request-ID reuse regression
+        run: ctest --test-dir build -C Release -R core.bridge_async --repeat until-fail:20 --output-on-failure

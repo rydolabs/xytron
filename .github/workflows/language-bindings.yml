@@ -1,0 +1,25 @@
+name: Xytron Language Export Discovery
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  exports:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Python @xytron.export discovery
+        run: python -m unittest discover -s bindings/python/tests -v
+      - name: C# [Export] reflection discovery
+        run: dotnet run --project bindings/dotnet/Tests/BindingExportsSmoke.csproj -c Release
