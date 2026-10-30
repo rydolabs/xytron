@@ -1,0 +1,40 @@
+name: Platform Smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Environment
+        shell: bash
+        run: |
+          echo "Runner OS: ${{ runner.os }}"
+          cmake --version
+          if command -v ninja >/dev/null 2>&1; then ninja --version; fi
+          if command -v g++ >/dev/null 2>&1; then g++ --version; fi
+          if command -v clang++ >/dev/null 2>&1; then clang++ --version; fi
+          if command -v cl >/dev/null 2>&1; then cl || true; fi
+
+      - name: Configure
+        run: cmake -S ci/smoke -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure

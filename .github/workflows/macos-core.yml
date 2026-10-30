@@ -1,0 +1,101 @@
+name: macOS Core Port
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/macos-core.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/cli/**'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: macos-core-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner and Xcode
+        shell: bash
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          cmake --version
+          if [ "$(uname -m)" != "${{ matrix.arch }}" ]; then
+            echo "Unexpected runner CPU: $(uname -m)" >&2
+            exit 1
+          fi
+
+      - name: Configure C++11 Core, CLI and native plugin fixtures
+        shell: bash
+        run: |
+          cmake -S . -B build/macos \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNATIVEWEB_BUILD_TESTS=ON \
+            -DCMAKE_CXX_STANDARD=11
+
+      - name: Build
+        run: cmake --build build/macos --config Release --parallel 2
+
+      - name: All Core, native plugin and CLI regressions
+        run: ctest --test-dir build/macos -C Release --output-on-failure --timeout 120
+
+      - name: Repeat async cancellation regression
+        run: ctest --test-dir build/macos -C Release -R 'core[.]bridge_async' --repeat until-fail:10 --output-on-failure
+
+      - name: Install standalone Core SDK
+        shell: bash
+        run: |
+          cmake --install build/macos --prefix "$GITHUB_WORKSPACE/sdk-stage"
+          mv "$GITHUB_WORKSPACE/sdk-stage" "$GITHUB_WORKSPACE/sdk-relocated"
+
+      - name: Build independent installed-SDK consumer
+        shell: bash
+        run: |
+          cmake -S examples/sdk_consumer -B build/macos-consumer \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_PREFIX_PATH=$GITHUB_WORKSPACE/sdk-relocated"
+          cmake --build build/macos-consumer --config Release --parallel 2
+
+      - name: Run relocated SDK consumer
+        run: ctest --test-dir build/macos-consumer -C Release --output-on-failure
+
+      - name: Compile Objective-C++ WKWebView API probe
+        shell: bash
+        run: |
+          cmake -S tests/integration/wkwebview -B build/wkwebview-api \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/wkwebview-api --config Release --parallel 2
+
+      - name: Run real WKWebView bridge E2E
+        run: ctest --test-dir build/wkwebview-api -C Release -R 'browser[.]wkwebview_bridge' --output-on-failure --timeout 35
+
+      - name: Measure WKWebView JS-Native RTT (diagnostic only)
+        run: python3 tools/run_bridge_benchmark.py --engine wkwebview --build-dir build/wkwebview-api --output-dir build/bridge-benchmark --warmup 20 --samples 100 --timeout 130
+
+      - name: Upload raw bridge latency samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xytron-bridge-latency-wkwebview-${{ matrix.arch }}
+          path: build/bridge-benchmark/*
+          if-no-files-found: warn

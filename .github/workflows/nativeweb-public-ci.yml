@@ -1,0 +1,37 @@
+name: NativeWeb public-source Windows/Linux CI
+'on':
+  push:
+    branches: [nativeweb/public-ci]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  published-core-sdk-and-process-probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure published baseline
+        run: cmake -S . -B build-public -DNATIVEWEB_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build published NativeWeb Core and CLI
+        run: cmake --build build-public --config Release --parallel 3
+      - name: Run baseline Core and CLI regressions
+        run: ctest --test-dir build-public -C Release --output-on-failure --timeout 90
+      - name: Install published Core SDK
+        run: cmake --install build-public --config Release --prefix "${{ github.workspace }}/public-sdk"
+      - name: Configure independent SDK consumer
+        run: cmake -S examples/sdk_consumer -B build-public-consumer -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=${{ github.workspace }}/public-sdk"
+      - name: Build independent consumer
+        run: cmake --build build-public-consumer --config Release --parallel 2
+      - name: Run installed consumer
+        run: ctest --test-dir build-public-consumer -C Release --output-on-failure --timeout 90
+      - name: Configure public Windows/Linux command-line process probe
+        run: cmake -S tools/public_ci -B build-public-probe -DCMAKE_BUILD_TYPE=Release
+      - name: Build process probe and staged executable
+        run: cmake --build build-public-probe --config Release --parallel 2
+      - name: Test process path and exit-code propagation
+        run: ctest --test-dir build-public-probe -C Release --output-on-failure --timeout 20

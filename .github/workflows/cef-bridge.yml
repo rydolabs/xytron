@@ -1,0 +1,145 @@
+name: NativeWeb CEF Bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/browser/cef/**"
+      - "src/browser/common/**"
+      - "src/core/**"
+      - "src/plugin/**"
+      - "src/webview.cpp"
+      - "include/nativeweb/**"
+      - "tests/integration/cef/**"
+      - ".github/workflows/cef-bridge.yml"
+      - "tools/cef/**"
+  workflow_dispatch:
+
+env:
+  CEF_CACHE_DIR: ${{ github.workspace }}/.cache/cef/archive
+  CEF_EXTRACT_DIR: ${{ github.workspace }}/.cache/cef/extracted
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CEF build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            libnss3-dev \
+            libxss-dev \
+            libasound2-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libxkbcommon-dev \
+            xvfb
+
+      - name: Cache pinned CEF runtime
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CEF_CACHE_DIR }}
+            ${{ env.CEF_EXTRACT_DIR }}
+          key: cef-linux64-144.0.36-g78619fd-runtime-v1
+          restore-keys: |
+            cef-linux64-144.0.36-g78619fd
+
+      - name: Bootstrap pinned CEF
+        shell: bash
+        run: |
+          CEF_ROOT="$(bash tools/cef/bootstrap_linux.sh "$CEF_CACHE_DIR" "$CEF_EXTRACT_DIR" | tail -n 1)"
+          echo "CEF_ROOT=$CEF_ROOT" >> "$GITHUB_ENV"
+
+      - name: Configure NativeWeb CEF integration
+        shell: bash
+        run: |
+          cmake \
+            -S tests/integration/cef \
+            -B cef-nativeweb-build \
+            -DCEF_ROOT="$CEF_ROOT" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_SANDBOX=OFF
+
+      - name: Build NativeWeb CEF integration
+        shell: bash
+        run: |
+          cmake --build cef-nativeweb-build \
+            --config Release \
+            --target nativeweb_cef_bridge_integration \
+            --parallel 2
+
+          cmake --build cef-nativeweb-build \
+            --config Release \
+            --target nativeweb_cef_multi_webview_integration \
+            --parallel 2
+
+      - name: Verify CEF runtime layout
+        shell: bash
+        run: |
+          test -x cef-nativeweb-build/bin/nativeweb_cef_bridge_integration
+          test -x cef-nativeweb-build/bin/nativeweb_cef_multi_webview_integration
+          test -f cef-nativeweb-build/bin/libcef.so
+          test -f cef-nativeweb-build/bin/icudtl.dat
+          test -d cef-nativeweb-build/bin/locales
+
+          echo "CEF runtime layout:"
+          find cef-nativeweb-build/bin -maxdepth 2 -type f | sort | sed -n '1,120p'
+
+      - name: Run real JS to C++ Promise bridge
+        shell: bash
+        run: |
+          TEST_HTML="$(realpath tests/integration/cef/bridge_test.html)"
+          TEST_URL="file://$TEST_HTML"
+          RUNTIME_DIR="$(realpath cef-nativeweb-build/bin)"
+
+          set +e
+          (
+            cd "$RUNTIME_DIR"
+            timeout 30s xvfb-run -a \
+              ./nativeweb_cef_bridge_integration \
+              --no-sandbox \
+              --url="$TEST_URL"
+          )
+          rc=$?
+          set -e
+
+          if [[ "$rc" -eq 124 ]]; then
+            echo "NativeWeb CEF bridge timed out" >&2
+            exit 1
+          fi
+
+          exit "$rc"
+
+
+      - name: Run real multi-WebView isolation regression
+        shell: bash
+        run: |
+          TEST_HTML="$(realpath tests/integration/cef/multi_webview_test.html)"
+          TEST_URL="file://$TEST_HTML"
+          RUNTIME_DIR="$(realpath cef-nativeweb-build/bin)"
+
+          set +e
+          (
+            cd "$RUNTIME_DIR"
+            timeout 30s xvfb-run -a \
+              ./nativeweb_cef_multi_webview_integration \
+              --no-sandbox \
+              --url="$TEST_URL"
+          )
+          rc=$?
+          set -e
+
+          if [[ "$rc" -eq 124 ]]; then
+            echo "NativeWeb CEF multi-WebView test timed out" >&2
+            exit 1
+          fi
+
+          exit "$rc"

@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+# The Xytron package is a compatibility facade over the established Core.
+# Its transitive dependencies and installed binary are intentionally shared.
+include(CMakeFindDependencyMacro)
+find_dependency(NativeWeb CONFIG REQUIRED)
+if(NOT TARGET Xytron::Core)
+    add_library(Xytron::Core INTERFACE IMPORTED)
+    set_property(TARGET Xytron::Core PROPERTY
+        INTERFACE_LINK_LIBRARIES NativeWeb::Core)
+endif()
+check_required_components(Xytron)

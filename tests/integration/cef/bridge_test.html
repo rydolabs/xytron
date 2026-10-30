@@ -1,0 +1,433 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>NativeWeb CEF Bridge Test</title>
+</head>
+<body>
+<script>
+window.ui = {
+  multiply(a, b) {
+    return a * b;
+  },
+
+  async multiplyAsync(a, b) {
+    await Promise.resolve();
+    return a * b;
+  },
+
+  async rejectAsync() {
+    await Promise.resolve();
+    throw new Error("expected js rejection");
+  },
+
+  neverResolve() {
+    window.__nativewebPendingStarted = true;
+    return new Promise(() => {});
+  }
+};
+
+(async function () {
+  async function fail(message) {
+    try {
+      await xytron.invoke("test.fail", String(message));
+    } catch (_) {
+    }
+  }
+
+  async function checkpoint(name) {
+    await xytron.test.checkpoint(String(name));
+  }
+
+  try {
+    if (!location.search.includes("reloaded=1")) {
+      const beforeReload = await xytron.math.add(1, 2);
+      if (beforeReload !== 3) {
+        await fail("pre-reload math.add returned " + String(beforeReload));
+        return;
+      }
+
+      location.replace(location.href + "?reloaded=1");
+      return;
+    }
+
+    await checkpoint("reload-ready");
+
+    const result = await xytron.math.add(3, 4);
+    if (result !== 7) {
+      await fail("math.add returned " + String(result));
+      return;
+    }
+
+    const appleAdd =
+      await xytron.apple.add(1, 2);
+
+    if (appleAdd !== 13) {
+      await fail(
+        "root object apple.add failed: " +
+        String(appleAdd)
+      );
+      return;
+    }
+
+    const appleSub =
+      await xytron.apple.sub(5, 3);
+
+    if (appleSub !== 12) {
+      await fail(
+        "root object apple.sub failed: " +
+        String(appleSub)
+      );
+      return;
+    }
+
+    const appleName =
+      await xytron.apple.name();
+
+    if (appleName !== "apple") {
+      await fail(
+        "root object apple.name failed: " +
+        String(appleName)
+      );
+      return;
+    }
+
+    await checkpoint("root-object-ok");
+
+    const primitiveResult =
+      await xytron.invoke("math.add", 2, 5);
+
+    if (primitiveResult !== 7) {
+      await fail("xytron.invoke compatibility returned " + String(primitiveResult));
+      return;
+    }
+
+    const workerThread =
+      await xytron.test.isWorkerThread();
+
+    if (workerThread !== true) {
+      await fail("native call did not execute on a worker thread");
+      return;
+    }
+
+    const concurrentValues = await Promise.all([
+      xytron.test.concurrentProbe(1),
+      xytron.test.concurrentProbe(2),
+      xytron.test.concurrentProbe(3),
+      xytron.test.concurrentProbe(4)
+    ]);
+
+    if (
+      concurrentValues.join(",") !== "1,2,3,4"
+    ) {
+      await fail("concurrent native call results were corrupted");
+      return;
+    }
+
+    const maxConcurrency =
+      await xytron.test.maxConcurrency();
+
+    if (maxConcurrency < 2) {
+      await fail(
+        "native calls did not overlap; max concurrency=" +
+        String(maxConcurrency)
+      );
+      return;
+    }
+
+    await checkpoint("worker-concurrency-ok");
+
+    const objectResult = await xytron.echo.object({
+      name: "camera",
+      retry: true,
+      nested: { count: 2 }
+    });
+
+    if (
+      !objectResult ||
+      objectResult.name !== "camera" ||
+      objectResult.retry !== true ||
+      !objectResult.nested ||
+      objectResult.nested.count !== 2
+    ) {
+      await fail("object round-trip failed");
+      return;
+    }
+
+    const arrayResult = await xytron.echo.array(
+      [1, "two", true, [3, 4]]
+    );
+
+    if (
+      !Array.isArray(arrayResult) ||
+      arrayResult.length !== 4 ||
+      arrayResult[0] !== 1 ||
+      arrayResult[1] !== "two" ||
+      arrayResult[2] !== true ||
+      !Array.isArray(arrayResult[3]) ||
+      arrayResult[3][1] !== 4
+    ) {
+      await fail("array round-trip failed");
+      return;
+    }
+
+    const binaryResult = await xytron.test.binary();
+
+    if (!(binaryResult instanceof ArrayBuffer)) {
+      await fail(
+        "binary result is not ArrayBuffer: " +
+        Object.prototype.toString.call(binaryResult)
+      );
+      return;
+    }
+
+    const bytes = new Uint8Array(binaryResult);
+    if (
+      bytes.length !== 3 ||
+      bytes[0] !== 0 ||
+      bytes[1] !== 127 ||
+      bytes[2] !== 255
+    ) {
+      await fail("binary round-trip failed");
+      return;
+    }
+
+    await checkpoint("value-binary-ok");
+
+    let eventSubscription = "";
+    const eventPromise = new Promise((resolve) => {
+      eventSubscription = xytron.on(
+        "test.event",
+        (payload) => resolve(payload)
+      );
+    });
+
+    await xytron.test.emit(
+      { value: 42, label: "from-cpp" }
+    );
+
+    const eventPayload = await eventPromise;
+    xytron.off(eventSubscription);
+
+    if (
+      !eventPayload ||
+      eventPayload.value !== 42 ||
+      eventPayload.label !== "from-cpp"
+    ) {
+      await fail("event transport failed");
+      return;
+    }
+
+    await checkpoint("events-ok");
+
+    let expectedStructuredRejected = false;
+
+    try {
+      await xytron.test.rejectExpected();
+    } catch (error) {
+      const text = String(error);
+      expectedStructuredRejected =
+        text.includes("expected_error") &&
+        text.includes("expected structured rejection");
+    }
+
+    if (!expectedStructuredRejected) {
+      await fail(
+        "expected structured rejection did not reject Promise"
+      );
+      return;
+    }
+
+    await checkpoint("generic-error-reject-ok");
+
+    const camera =
+      await xytron.camera.open();
+
+    if (
+      !camera ||
+      camera.__nativewebType !== "Camera" ||
+      !camera.__nativewebObjectId
+    ) {
+      await fail("native object proxy was not created");
+      return;
+    }
+
+    await checkpoint("native-object-open");
+
+    const cameraValue =
+      await camera.add(2);
+
+    if (cameraValue !== 42) {
+      await fail(
+        "native object method returned " +
+        String(cameraValue)
+      );
+      return;
+    }
+
+    await checkpoint("native-object-add");
+
+    const cameraName =
+      await camera.name();
+
+    if (cameraName !== "camera") {
+      await fail(
+        "native object name returned " +
+        String(cameraName)
+      );
+      return;
+    }
+
+    await checkpoint("native-object-name");
+
+    const accepted =
+      await xytron.camera.accept(camera);
+
+    if (accepted !== true) {
+      await fail(
+        "native object handle did not round-trip"
+      );
+      return;
+    }
+
+    await checkpoint("native-object-roundtrip");
+
+    const released =
+      await camera.dispose();
+
+    if (released !== true) {
+      await fail(
+        "native object dispose did not release"
+      );
+      return;
+    }
+
+    await checkpoint("native-object-dispose");
+
+    let releasedCallRejected = false;
+
+    try {
+      await camera.add(1);
+    } catch (error) {
+      releasedCallRejected =
+        String(error).includes(
+          "native_object_not_found"
+        );
+    }
+
+    if (!releasedCallRejected) {
+      await fail(
+        "released native object remained callable"
+      );
+      return;
+    }
+
+    await checkpoint("native-object-released-reject");
+    await checkpoint("native-object-ok");
+
+    let nativeExceptionRejected = false;
+    try {
+      await xytron.test.throw();
+    } catch (error) {
+      const text = String(error);
+      nativeExceptionRejected =
+        text.includes("native_exception") &&
+        text.includes("expected native exception");
+    }
+
+    if (!nativeExceptionRejected) {
+      await fail("native exception did not reject Promise correctly");
+      return;
+    }
+
+    let missingMethodRejected = false;
+    try {
+      await xytron.missing.method();
+    } catch (error) {
+      missingMethodRejected =
+        String(error).includes("method_not_found");
+    }
+
+    if (!missingMethodRejected) {
+      await fail("missing method did not reject Promise correctly");
+      return;
+    }
+
+    await checkpoint("error-mapping-ok");
+
+    await xytron.test.beginCppCalls();
+
+    let cppStatus = null;
+    for (let attempt = 0; attempt < 100; ++attempt) {
+      cppStatus = await xytron.test.cppCallsStatus();
+
+      if (cppStatus && cppStatus.done) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    if (
+      !cppStatus ||
+      cppStatus.done !== true ||
+      cppStatus.success !== true
+    ) {
+      await fail(
+        "C++ to JavaScript calls failed: " +
+        String(
+          cppStatus && cppStatus.message
+            ? cppStatus.message
+            : "timeout"
+        )
+      );
+      return;
+    }
+
+    await checkpoint("cpp-to-js-ok");
+
+    const done =
+      await xytron.test.done(result);
+
+    if (done !== true) {
+      await fail("pre-destroy checks did not complete");
+      return;
+    }
+
+    await checkpoint("pre-destroy-ok");
+
+    window.__nativewebPendingStarted = false;
+
+    await xytron.test.beginPendingDestroy();
+
+    for (let attempt = 0; attempt < 100; ++attempt) {
+      if (window.__nativewebPendingStarted === true) {
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    if (window.__nativewebPendingStarted !== true) {
+      await fail("pending JS Promise was never entered");
+      return;
+    }
+
+    await checkpoint("pending-js-entered");
+
+    try {
+      await xytron.test.destroyWithPending();
+    } catch (_) {
+      // Closing the WebView may prevent this final JS-side Promise
+      // from observing the native callback result. The C++ side is
+      // the authority for this regression.
+    }
+  } catch (error) {
+    if (window.xytron && xytron.invoke) {
+      await fail(error && error.stack ? error.stack : String(error));
+    }
+  }
+})();
+</script>
+</body>
+</html>

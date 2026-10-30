@@ -1,0 +1,172 @@
+name: Browser plugin E2E
+
+on:
+  push:
+    branches: [nativeweb/public-ci]
+    paths:
+      - '.github/workflows/browser-plugin-e2e.yml'
+      - 'src/**'
+      - 'include/**'
+      - 'tests/integration/**'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/browser-plugin-e2e.yml'
+      - 'src/**'
+      - 'include/**'
+      - 'tests/integration/**'
+      - 'tests/plugin/object_factory_plugin.cpp'
+      - 'tools/**'
+
+jobs:
+  linux-cef:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CEF runtime/build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential python3 xvfb \
+            libgtk-3-dev libnss3 libgbm1 libasound2t64 libxss1
+      - name: Set up .NET 8 for managed browser worker
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build actual .NET browser worker
+        run: dotnet build bindings/dotnet/HostProcessDemo/HostProcessDemo.csproj -c Release --nologo
+      - name: Download pinned Linux CEF
+        shell: bash
+        run: |
+          root="$(bash tools/bootstrap_linux.sh "$GITHUB_WORKSPACE/.cache/cef" "$GITHUB_WORKSPACE/.cache/extracted" | tail -n 1)"
+          echo "CEF_ROOT=$root" >> "$GITHUB_ENV"
+      - name: Configure CEF integration
+        run: cmake -S tests/integration/cef -B build/cef -DCEF_ROOT="$CEF_ROOT" -DCMAKE_BUILD_TYPE=Release
+      - name: Build CEF integration and plugin fixture
+        run: cmake --build build/cef --config Release --parallel 4
+      - name: Preflight CEF session handshake
+        run: python tools/run_browser_plugin_e2e.py --engine cef --build-dir build/cef --managed --timeout 25
+      - name: Run real browser plugin and packaged app-resource E2E
+        run: ctest --test-dir build/cef -R '^browser\.' --output-on-failure
+      - name: Build and install Core SDK and CLI for generated app smoke
+        run: |
+          cmake -S . -B build/app-core -DCMAKE_BUILD_TYPE=Release -DNATIVEWEB_BUILD_TESTS=OFF
+          cmake --build build/app-core --config Release --parallel 3
+          cmake --install build/app-core --config Release --prefix build/app-sdk
+      - name: Real xytron new/restore/build/run through CEF app:// host
+        run: python tools/run_generated_desktop_e2e.py --engine cef --xytron build/app-core/xytron --sdk build/app-sdk --host build/cef/bin/xytron_desktop_host
+      - name: Measure real browser JS-Native RTT (diagnostic only)
+        run: python tools/run_bridge_benchmark.py --engine cef --build-dir build/cef --output-dir build/bridge-benchmark --warmup 20 --samples 100 --timeout 130
+      - name: Upload raw bridge latency samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xytron-bridge-latency-cef-${{ runner.os }}
+          path: build/bridge-benchmark/*
+          if-no-files-found: warn
+
+
+  windows-cef:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore pinned Windows CEF cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/cef/windows/archive
+            .cache/cef/windows/extracted
+          key: cef-windows64-144.0.36-g78619fd-runtime-v2
+          restore-keys: |
+            cef-windows64-144.0.36-g78619fd
+      - name: Verify Windows CEF archive extractor
+        shell: pwsh
+        timeout-minutes: 3
+        run: ./tools/test_expand_cef_archive_windows.ps1
+      - name: Set up .NET 8 for managed browser worker
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build actual .NET browser worker
+        run: dotnet build bindings/dotnet/HostProcessDemo/HostProcessDemo.csproj -c Release --nologo
+      - name: Download pinned Windows CEF
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          $cef = & ./tools/bootstrap_windows.ps1 | Select-Object -Last 1
+          "CEF_ROOT=$cef" >> $env:GITHUB_ENV
+      - name: Configure CEF integration
+        shell: pwsh
+        run: cmake -S tests/integration/cef -B build/cef "-DCEF_ROOT=$env:CEF_ROOT"
+      - name: Verify Windows CEF full parallel integration build
+        shell: pwsh
+        run: cmake --build build/cef --config Release --parallel 4
+      - name: Preflight CEF session handshake
+        shell: pwsh
+        run: python tools/run_browser_plugin_e2e.py --engine cef --build-dir build/cef --managed --timeout 25
+      - name: Run real browser plugin E2E
+        shell: pwsh
+        run: ctest --test-dir build/cef -C Release -R '^browser\.' --output-on-failure
+      - name: Build and install Core SDK and CLI for generated app smoke
+        run: |
+          cmake -S . -B build/app-core -DCMAKE_BUILD_TYPE=Release -DNATIVEWEB_BUILD_TESTS=OFF
+          cmake --build build/app-core --config Release --parallel 3
+          cmake --install build/app-core --config Release --prefix build/app-sdk
+      - name: Real xytron new/restore/build/run through CEF app:// host
+        run: python tools/run_generated_desktop_e2e.py --engine cef --xytron build/app-core/Release/xytron.exe --sdk build/app-sdk --host build/cef/bin/xytron_desktop_host.exe
+      - name: Measure real browser JS-Native RTT (diagnostic only)
+        run: python tools/run_bridge_benchmark.py --engine cef --build-dir build/cef --output-dir build/bridge-benchmark --warmup 20 --samples 100 --timeout 130
+      - name: Upload raw bridge latency samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xytron-bridge-latency-cef-${{ runner.os }}
+          path: build/bridge-benchmark/*
+          if-no-files-found: warn
+
+
+  windows-webview2:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 8 for managed browser worker
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build actual .NET browser worker
+        run: dotnet build bindings/dotnet/HostProcessDemo/HostProcessDemo.csproj -c Release --nologo
+      - name: Download pinned WebView2 SDK
+        shell: pwsh
+        run: |
+          nuget install Microsoft.Web.WebView2 -Version 1.0.4258.31 -OutputDirectory .cache/webview2 -NonInteractive
+          $sdk = (Resolve-Path .cache/webview2/Microsoft.Web.WebView2.1.0.4258.31).Path
+          "WEBVIEW2_ROOT=$sdk" >> $env:GITHUB_ENV
+      - name: Configure WebView2 integration
+        shell: pwsh
+        run: cmake -S tests/integration/webview2 -B build/webview2 "-DWEBVIEW2_ROOT=$env:WEBVIEW2_ROOT"
+      - name: Build WebView2 integration and plugin fixture
+        shell: pwsh
+        run: cmake --build build/webview2 --config Release --parallel 4
+      - name: Run real browser plugin E2E
+        shell: pwsh
+        run: ctest --test-dir build/webview2 -C Release -R '^browser\.' --output-on-failure
+      - name: Build and install Core SDK and CLI for generated app smoke
+        shell: pwsh
+        run: |
+          cmake -S . -B build/app-core -DCMAKE_BUILD_TYPE=Release -DNATIVEWEB_BUILD_TESTS=OFF
+          cmake --build build/app-core --config Release --parallel 3
+          cmake --install build/app-core --config Release --prefix build/app-sdk
+      - name: Real xytron new/restore/build/run through WebView2 app:// host
+        run: python tools/run_generated_desktop_e2e.py --engine webview2 --xytron build/app-core/Release/xytron.exe --sdk build/app-sdk --host build/webview2/bin/xytron_desktop_host.exe
+      - name: Measure real browser JS-Native RTT (diagnostic only)
+        run: python tools/run_bridge_benchmark.py --engine webview2 --build-dir build/webview2 --output-dir build/bridge-benchmark --warmup 20 --samples 100 --timeout 130
+      - name: Upload raw bridge latency samples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xytron-bridge-latency-webview2-${{ runner.os }}
+          path: build/bridge-benchmark/*
+          if-no-files-found: warn
+

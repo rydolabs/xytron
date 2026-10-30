@@ -1,0 +1,91 @@
+name: CEF Linux Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/cef/**"
+      - ".github/workflows/cef-linux-smoke.yml"
+  workflow_dispatch:
+
+env:
+  CEF_CACHE_DIR: ${{ github.workspace }}/.cache/cef/archive
+  CEF_EXTRACT_DIR: ${{ github.workspace }}/.cache/cef/extracted
+
+jobs:
+  cefsimple:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install CEF build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev \
+            libnss3-dev \
+            libxss-dev \
+            libasound2-dev \
+            libdrm-dev \
+            libgbm-dev \
+            libxkbcommon-dev \
+            xvfb
+
+      - name: Cache pinned CEF archive
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CEF_CACHE_DIR }}
+          key: cef-linux64-144.0.36-g78619fd
+
+      - name: Bootstrap pinned CEF
+        id: cef
+        shell: bash
+        run: |
+          CEF_ROOT="$(bash tools/cef/bootstrap_linux.sh "$CEF_CACHE_DIR" "$CEF_EXTRACT_DIR" | tail -n 1)"
+          echo "root=$CEF_ROOT" >> "$GITHUB_OUTPUT"
+          echo "CEF_ROOT=$CEF_ROOT" >> "$GITHUB_ENV"
+          sed -n '1,120p' "$CEF_ROOT/README.txt"
+
+      - name: Configure upstream CEF samples
+        shell: bash
+        run: |
+          cmake -S "$CEF_ROOT" -B cef-build \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build upstream cefsimple
+        shell: bash
+        run: |
+          cmake --build cef-build --config Release --target cefsimple --parallel 2
+
+      - name: Locate cefsimple
+        shell: bash
+        run: |
+          CEF_SIMPLE="$(find cef-build -type f -name cefsimple -perm -111 | head -n 1)"
+          if [[ -z "$CEF_SIMPLE" ]]; then
+            echo "Could not find built cefsimple" >&2
+            find cef-build -maxdepth 5 -type f | sort | tail -n 200
+            exit 1
+          fi
+          echo "CEF_SIMPLE=$CEF_SIMPLE" >> "$GITHUB_ENV"
+          echo "cefsimple=$CEF_SIMPLE"
+
+      - name: Run cefsimple initialization smoke under Xvfb
+        shell: bash
+        run: |
+          set +e
+          timeout 12s xvfb-run -a "$CEF_SIMPLE" --no-sandbox --url=about:blank
+          rc=$?
+          set -e
+
+          # cefsimple is an interactive application. A timeout means it stayed
+          # alive long enough to initialize successfully under Xvfb.
+          if [[ "$rc" -ne 0 && "$rc" -ne 124 ]]; then
+            echo "cefsimple exited unexpectedly: $rc" >&2
+            exit "$rc"
+          fi
+
+          echo "CEF upstream cefsimple smoke: PASS (exit=$rc)"

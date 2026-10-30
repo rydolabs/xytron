@@ -1,0 +1,23 @@
+# CMake and local build trees
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/dist/
+/releases/
+/sdk-install/
+/sdk-relocated/
+/a1-public-sdk/
+*.xplugin
+
+# Toolchain caches and generated app artifacts
+/.cache/
+**/.xytron-build/
+**/.xytron/
+**/bin/
+**/obj/
+__pycache__/
+*.py[cod]
+.vs/
+.idea/
+.DS_Store

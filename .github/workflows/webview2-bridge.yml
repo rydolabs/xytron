@@ -1,0 +1,96 @@
+name: NativeWeb WebView2 Bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/browser/webview2/**"
+      - "src/browser/common/**"
+      - "src/core/**"
+      - "src/plugin/**"
+      - "src/webview.cpp"
+      - "include/nativeweb/**"
+      - "tests/integration/webview2/**"
+      - "tests/integration/cef/bridge_test.html"
+      - ".github/workflows/webview2-bridge.yml"
+  workflow_dispatch:
+
+env:
+  WEBVIEW2_VERSION: 1.0.4258.31
+  WEBVIEW2_CACHE_DIR: ${{ github.workspace }}\.cache\webview2
+
+jobs:
+  bridge:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache WebView2 SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.WEBVIEW2_CACHE_DIR }}
+          key: webview2-sdk-${{ env.WEBVIEW2_VERSION }}-v1
+
+      - name: Bootstrap pinned WebView2 SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:WEBVIEW2_CACHE_DIR $env:WEBVIEW2_VERSION
+          $header = Join-Path $root "build\native\include\WebView2.h"
+
+          if (-not (Test-Path $header)) {
+            New-Item -ItemType Directory -Force -Path $root | Out-Null
+            $package = Join-Path $env:RUNNER_TEMP "Microsoft.Web.WebView2.zip"
+            $url = "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$env:WEBVIEW2_VERSION"
+            curl.exe -L --fail --retry 3 $url -o $package
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download WebView2 SDK" }
+            tar.exe -xf $package -C $root
+            if ($LASTEXITCODE -ne 0) { throw "Failed to extract WebView2 SDK" }
+          }
+
+          if (-not (Test-Path $header)) { throw "WebView2.h missing after bootstrap" }
+          "WEBVIEW2_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "WebView2 SDK root: $root"
+          Write-Host "Pinned version: $env:WEBVIEW2_VERSION"
+
+      - name: Configure NativeWeb WebView2 integration
+        shell: pwsh
+        run: cmake -S tests/integration/webview2 -B webview2-nativeweb-build -A x64 -DWEBVIEW2_ROOT="$env:WEBVIEW2_ROOT"
+
+      - name: Build NativeWeb WebView2 integration
+        shell: pwsh
+        run: |
+          cmake --build webview2-nativeweb-build --config Release --target nativeweb_webview2_bridge_integration --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build webview2-nativeweb-build --config Release --target nativeweb_webview2_multi_webview_integration --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run real WebView2 bridge contract
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = "Stop"
+          $html = (Resolve-Path "tests/integration/cef/bridge_test.html").Path.Replace("\", "/")
+          $url = "file:///$html"
+          $exe = (Resolve-Path "webview2-nativeweb-build/bin/nativeweb_webview2_bridge_integration.exe").Path
+          Write-Host "Running: $exe"
+          Write-Host "URL: $url"
+          & $exe "--url=$url"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+
+      - name: Run real WebView2 multi-WebView isolation
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = "Stop"
+          $html = (Resolve-Path "tests/integration/cef/multi_webview_test.html").Path.Replace("\", "/")
+          $url = "file:///$html"
+          $exe = (Resolve-Path "webview2-nativeweb-build/bin/nativeweb_webview2_multi_webview_integration.exe").Path
+          Write-Host "Running: $exe"
+          Write-Host "URL: $url"
+          & $exe "--url=$url"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

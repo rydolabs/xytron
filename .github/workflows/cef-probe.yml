@@ -1,0 +1,21 @@
+name: CEF Artifact Probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/cef/**"
+      - ".github/workflows/cef-probe.yml"
+  workflow_dispatch:
+
+jobs:
+  linux-cef-artifact:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Probe pinned CEF artifact
+        shell: bash
+        run: bash tools/cef/probe_linux.sh

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Managed worker real browser E2E</title></head>
+<body><script>
+(async () => {
+  if (window !== window.top) {
+    let outcome = "no-bridge";
+    try {
+      if (typeof xytron !== "undefined") {
+        await xytron.example_py.Player.create("child");
+        outcome = "allowed";
+      }
+    } catch (_) { outcome = "denied"; }
+    parent.postMessage({kind:"managed-child-probe",outcome}, "*");
+    return;
+  }
+  const ensure = (ok, message) => {if (!ok) throw new Error(message);};
+  try {
+    let ready = false;
+    for (let i=0;i<100;i++) {
+      if (await xytron.test.managed.ready()) { ready=true;break; }
+      await new Promise(r=>setTimeout(r,30));
+    }
+    ensure(ready,"Worker not ready");
+    // Real browser: deadline and AbortSignal must settle the JS Promise,
+    // cancel the native request ID and preserve unrelated subsequent calls.
+    ensure(typeof xytron.invokeWithOptions === "function",
+           "Missing cancellable JS bridge API");
+    // Headless CEF can throttle renderer setTimeout callbacks beyond 5s,
+    // allowing the native operation to finish before the timer fires.
+    // Require the deadline probe on WebView2; on CEF, exercise the
+    // deterministic AbortSignal path below and keep the API contract.
+    if (window.chrome && window.chrome.webview) {
+      let timedOut = false;
+      let deadlineOutcome = "resolved";
+      try {
+        deadlineOutcome = String(await xytron.invokeWithOptions(
+          "test.cancel.delay",{timeoutMs:100},5000));
+      } catch(e) {
+        deadlineOutcome = String(e);
+        timedOut = /request_timeout|request_cancelled/.test(deadlineOutcome);
+      }
+      ensure(timedOut,"Timeout did not reject slow request: " + deadlineOutcome);
+    }
+    const aborter=new AbortController();
+    const abortedCall=xytron.invokeWithOptions(
+      "test.cancel.delay",{signal:aborter.signal},5000);
+    aborter.abort();
+    let aborted=false;
+    try { await abortedCall; }
+    catch(e){aborted=String(e).includes("request_cancelled");}
+    ensure(aborted,"AbortSignal did not reject request");
+    ensure(await xytron.math.add(2,3)===5,
+           "Cancellation corrupted unrelated request");
+    await xytron.test.checkpoint("request-cancel-verified");
+
+    // WebView2 security regression: forged/missing document sessions
+    // must never reach the trusted host's test.fail binding.
+    if (window.chrome && window.chrome.webview) {
+      const forged = (id, session) =>
+        window.chrome.webview.postMessage({
+          type:"request", id, method:"test.fail",
+          args:["bridge-fail: forged document session was accepted"], ...session
+        });
+      forged("987654321", {session:"0".repeat(48)});
+      forged("987654322", {});
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+
+    const h = await xytron.example_py.Player.create("Ada");
+    ensure(typeof h==="string" && h.startsWith("xy_"),"Invalid opaque handle");
+    ensure(await xytron.example_py.Player.method.hit(h,9)===91,"Python method");
+    ensure(await xytron.example_py.Player.get.health(h)===91,"Python property get");
+    await xytron.example_py.Player.set.health(h,42);
+    ensure(await xytron.example_py.Player.get.health(h)===42,"Python property set");
+    let denied=false;
+    try { await xytron.example_py.Player.method.secret(h); }
+    catch (e) { denied=String(e).includes("method_not_found"); }
+    ensure(denied,"Unapproved method reached ProcessBroker");
+    await xytron.example_py.Player.dispose(h);
+    denied=false;
+    try {await xytron.example_py.Player.get.health(h);}
+    catch (e) {denied=String(e).includes("worker_rejected");}
+    ensure(denied,"Disposed managed handle remained usable");
+    await xytron.test.checkpoint("managed-python-object-lifecycle");
+
+    const iframe=document.createElement("iframe");
+    iframe.style.display="none";
+    const probe=new Promise(resolve=>{
+      const timer=setTimeout(()=>{window.removeEventListener("message",listener);resolve("timeout");},7000);
+      function listener(e){
+        if(e.source!==iframe.contentWindow || !e.data ||
+           e.data.kind!=="managed-child-probe")return;
+        clearTimeout(timer);window.removeEventListener("message",listener);
+        resolve(e.data.outcome);
+      }
+      window.addEventListener("message",listener);
+    });
+    iframe.src="managed_bridge_test.html";
+    document.body.appendChild(iframe);
+    const outcome=await probe;
+    iframe.remove();
+    ensure(outcome==="denied" || outcome==="no-bridge" || outcome==="timeout",
+           "Child frame managed permission probe: "+outcome);
+    await xytron.test.checkpoint("managed-python-child-denied");
+    try {await xytron.test.managed.done();}catch(_){}
+  }catch(error){
+    try {await xytron.test.fail(String(error&&error.stack||error));}catch(_){}
+  }
+})();
+</script></body></html>
