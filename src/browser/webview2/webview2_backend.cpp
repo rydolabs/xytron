@@ -222,7 +222,7 @@ void WebView2Backend::create(
         if(needed>0) {
             if(needed>32768)
                 throw Error("invalid_webview2_profile","WebView2 profile path too long");
-            std::vector<wchar_t> buf(needed,L'\\0');
+            std::vector<wchar_t> buf(needed,L'\0');
             const DWORD actual=GetEnvironmentVariableW(
                 L"XYTRON_WEBVIEW2_PROFILE_DIR",&buf[0],needed);
             if(actual==0 || actual>=needed)
@@ -231,8 +231,8 @@ void WebView2Backend::create(
             // Only accept absolute drive paths; do not let an untrusted
             // relative profile accidentally resolve beneath the app bundle.
             if(explicitProfile.size()<4 || explicitProfile[1]!=L':' ||
-               (explicitProfile[2]!=L'\\\\' && explicitProfile[2]!=L'/') ||
-               explicitProfile.find(L'\\0')!=std::wstring::npos)
+               (explicitProfile[2]!=L'\\' && explicitProfile[2]!=L'/') ||
+               explicitProfile.find(L'\0')!=std::wstring::npos)
                 throw Error("invalid_webview2_profile","Profile path must be absolute");
         }
     }
