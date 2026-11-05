@@ -180,6 +180,27 @@ def test_all(exe, repo, sdk, require_dotnet):
         execute(exe, cpp, "pack", expect=1)
         if sdk:
             execute(exe, cpp, "build", "--sdk", sdk)
+            # Build output must agree with the entry declared in plugin.json,
+            # not merely be repacked at the correct ZIP path later.
+            rid = "win-x64" if os.name == "nt" else "linux-x64"
+            lib = "camera.dll" if os.name == "nt" else "libcamera.so"
+            compiled = cpp / "build" / ("Release" if os.name == "nt" else "") / lib
+            staged = cpp / "bin" / rid / lib
+            assert staged.is_file() and staged.read_bytes() == compiled.read_bytes()
+            checks += 1
+            if os.name != "nt":
+                # A symlink at the manifest entry must never overwrite a
+                # file outside the plugin project on a subsequent rebuild.
+                sentinel = root / "external-plugin-output"
+                sentinel.write_bytes(b"unchanged")
+                staged.unlink()
+                staged.symlink_to(sentinel)
+                execute(exe, cpp, "build", "--sdk", sdk, expect=1)
+                assert sentinel.read_bytes() == b"unchanged"
+                staged.unlink()
+                execute(exe, cpp, "build", "--sdk", sdk)
+                assert staged.read_bytes() == compiled.read_bytes()
+                checks += 1
             execute(exe, cpp, "pack")
             native = cpp / "dist/camera-1.0.0-linux-x64.xplugin"
             if os.name == "nt":
