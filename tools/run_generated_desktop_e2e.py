@@ -143,7 +143,12 @@ def run():
         if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
             command=["xvfb-run","-a"]+command
         rc,bundle_output=execute(command,bundle,timeout=140)
-        missing=[marker for marker in markers if marker not in bundle_output]
+        # An installed local launcher runs the browser binary directly;
+        # the CLI-only "host completed" line is not part of that protocol.
+        bundle_markers=tuple(marker for marker in markers
+                             if marker!="Real browser app:// host completed successfully.")
+        bundle_markers+=("xytron native desktop host: PASS",)
+        missing=[marker for marker in bundle_markers if marker not in bundle_output]
         if rc or missing or "bridge-fail:" in bundle_output:
             raise AssertionError("C++ local-only bundle failed: "+str((rc,missing))+
                                  "\n"+bundle_output[-1800:])
@@ -322,7 +327,10 @@ internal static class Program""")
             if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
                 command=["xvfb-run","-a"]+command
             rc,bundle_output=execute(command,bundle,timeout=140)
-            missing=[item for item in checkpoints if item not in bundle_output]
+            bundle_markers=tuple(item for item in checkpoints
+                                 if item!="Real browser app:// host completed successfully.")
+            bundle_markers+=("xytron native desktop host: PASS",)
+            missing=[item for item in bundle_markers if item not in bundle_output]
             if rc or missing or "bridge-fail:" in bundle_output:
                 raise AssertionError(language+" local-only bundle failed: "+
                                      str((rc,missing))+"\n"+bundle_output[-1800:])
