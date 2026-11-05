@@ -725,11 +725,12 @@ int main(int argc,char** argv) {
     const std::string explicitUi=flag(argc,argv,"--ui=");
     std::string portableRoot;
 #ifndef XYTRON_APP_HOST_CEF
-    if(explicitUi.empty())portableRoot=localPortableRoot();
+    portableRoot=localPortableRoot();
 #endif
     const std::string languageFlag=flag(argc,argv,"--backend-language=");
     if(!portableRoot.empty() &&
-       (!languageFlag.empty() || !flag(argc,argv,"--backend-plugin=").empty() ||
+       (!explicitUi.empty() || !languageFlag.empty() ||
+        !flag(argc,argv,"--backend-plugin=").empty() ||
         !flag(argc,argv,"--plugin-path=").empty()))
       throw std::runtime_error("Local app forbids overriding its packaged backend/plugins");
     const std::string language=portableRoot.empty()?
