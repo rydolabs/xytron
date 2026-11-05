@@ -130,6 +130,7 @@ def run():
             markers+=(
                 "checkpoint: win32-menu-js-subscriber-action-unsubscribe",
                 "checkpoint: win32-context-js-subscriber-action-unsubscribe",
+                "checkpoint: win32-exit-js-subscriber",
             )
             for native_marker in (
                 "checkpoint: native-win32-menu-command-action",
@@ -139,6 +140,8 @@ def run():
                     raise AssertionError("Expected two real Win32 menu commands for "+
                                          native_marker+", got "+
                                          str(output.count(native_marker)))
+            if output.count("checkpoint: native-win32-exit-command")!=1:
+                raise AssertionError("Native Exit command was not dispatched exactly once")
         missing=[marker for marker in markers if marker not in output]
         if rc!=0 or missing or "bridge-fail:" in output:
             raise AssertionError("Real native app E2E failed: exit={} missing={}".format(
