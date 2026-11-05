@@ -27,6 +27,9 @@ foreach(backend cpp python csharp)
   command("${backend}_app" 0 build)
   command("${backend}_app" 0 test)
   command("${backend}_app" 0 doctor)
+  # Explicit runtime diagnostics must fail closed with only Core installed.
+  # The positive engine-host path is exercised by real CEF/WebView2 E2E.
+  command("${backend}_app" 1 doctor --runtime)
   # A Core-only SDK intentionally has no installed engine host. The
   # default run path must fail explicitly rather than pretending to launch.
   command("${backend}_app" 1 run)
