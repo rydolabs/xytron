@@ -41,11 +41,13 @@ bool verified = false;
 // Posting a command from the JS-facing method uses the same path as an
 // actual application-menu selection (without GUI automation or mouse races).
 enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402,
-       XYTRON_MENU_CONTEXT_ACTION=0x7403 };
+       XYTRON_MENU_CONTEXT_ACTION=0x7403, XYTRON_MENU_EXIT_TIMER=0x7404 };
 HWND menuProbeWindow=nullptr;
 std::atomic<unsigned> nativeMenuActions(0);
 std::atomic<unsigned> nativeContextActions(0);
+std::atomic<unsigned> nativeExitCommands(0);
 HMENU makeNativeContextMenu();
+HACCEL makeNativeAccelerators();
 #endif
 
 std::string flag(int argc, char** argv, const std::string& prefix) {
@@ -251,6 +253,27 @@ loadUi(const std::string& name, const std::string& lang) {
         throw new Error("Unsubscribed context JS listener still invoked");
       if(await xytron.app.contextProbeVerified()!==true)
         throw new Error("Native context action verification failed");
+
+      // Exit is intentionally delivered before teardown; on a real user
+      // click an OS timer enforces eventual close even without a subscriber.
+      let exitToken=null;
+      const exitReceived=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error("Native Exit event timed out")),8000);
+        exitToken=xytron.onMessage("app.menu",payload=>{
+          if(payload==="exit") {
+            clearTimeout(timer);
+            resolve(payload);
+          }
+        });
+      });
+      if(await xytron.app.exitProbeTrigger()!==true)
+        throw new Error("Unable to post native Exit command");
+      if(await exitReceived!=="exit")
+        throw new Error("Native Exit event did not reach JS");
+      if(!xytron.offMessage(exitToken))
+        throw new Error("Exit JS listener could not unsubscribe");
+      if(await xytron.app.exitProbeVerified()!==true)
+        throw new Error("Native Exit command not confirmed");
     }
     await xytron.app.complete();
   } catch (error) {
@@ -409,6 +432,24 @@ public:
         std::cout<<"checkpoint: win32-context-js-subscriber-action-unsubscribe"<<std::endl;
         return true;
       });
+      webview_.bind("app.exitProbeTrigger",[]() {
+        const HWND hwnd=menuProbeWindow;
+        if(!hwnd || !IsWindow(hwnd))
+          throw nativeweb::Error("menu_unavailable","Native window not available");
+        HMENU bar=GetMenu(hwnd);
+        HMENU app=bar?GetSubMenu(bar,0):nullptr;
+        if(!app || GetMenuItemID(app,2)!=XYTRON_MENU_EXIT)
+          throw nativeweb::Error("menu_unavailable","Native Exit menu item missing");
+        if(!PostMessageW(hwnd,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_EXIT,0),0))
+          throw nativeweb::Error("menu_unavailable","Cannot post native Exit command");
+        return true;
+      });
+      webview_.bind("app.exitProbeVerified",[]() {
+        if(nativeExitCommands.load()!=1)
+          throw nativeweb::Error("menu_unverified","Native Exit WM_COMMAND count mismatch");
+        std::cout<<"checkpoint: win32-exit-js-subscriber"<<std::endl;
+        return true;
+      });
 #endif
       webview_.bind("app.unloadFeature",[this]() {
         webview_.unloadPlugin("feature");
@@ -494,6 +535,15 @@ HMENU makeNativeContextMenu() {
   }
   return popup;
 }
+// Standard Win32 accelerator translation, handled by the standalone
+// window's normal message loop. No new NativeWeb public ABI types.
+HACCEL makeNativeAccelerators() {
+  ACCEL shortcut={};
+  shortcut.fVirt=FVIRTKEY|FCONTROL;
+  shortcut.key='M';
+  shortcut.cmd=XYTRON_MENU_ACTION;
+  return CreateAcceleratorTableW(&shortcut,1);
+}
 LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
   NativeMenuState* state=reinterpret_cast<NativeMenuState*>(
       GetWindowLongPtrW(wnd,GWLP_USERDATA));
@@ -510,16 +560,33 @@ LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
           ++state->contextActions;
           ++nativeContextActions;
           if(smoke)std::cout<<"checkpoint: native-win32-context-command-action"<<std::endl;
-        } else ++state->exits;
+        } else {
+          ++state->exits;
+          ++nativeExitCommands;
+          if(smoke)std::cout<<"checkpoint: native-win32-exit-command"<<std::endl;
+        }
       }
-      if(state && state->view && state->view->isCreated()) {
+      const bool active=state && state->view && state->view->isCreated();
+      if(active) {
         const std::string action=command==XYTRON_MENU_ACTION?"action":
           command==XYTRON_MENU_CONTEXT_ACTION?"context-action":"exit";
         state->view->emit("app.menu",action);
       }
-      if(command==XYTRON_MENU_EXIT) DestroyWindow(wnd);
+      if(command==XYTRON_MENU_EXIT) {
+        // Synchronous DestroyWindow would revoke the document before JS
+        // could observe the native event. The timer guarantees an eventual
+        // exit if the app never acknowledges or has no JS listener.
+        if(!active || !SetTimer(wnd,XYTRON_MENU_EXIT_TIMER,
+                                smoke?10000U:1000U,nullptr))
+          DestroyWindow(wnd);
+      }
       return 0;
     }
+  }
+  if(message==WM_TIMER && w==XYTRON_MENU_EXIT_TIMER) {
+    KillTimer(wnd,XYTRON_MENU_EXIT_TIMER);
+    DestroyWindow(wnd);
+    return 0;
   }
   const HWND source=reinterpret_cast<HWND>(w);
   if(message==WM_CONTEXTMENU && (source==wnd || (source && IsChild(wnd,source)))) {
@@ -561,7 +628,7 @@ HWND newWindow() {
     if(bar)DestroyMenu(bar);
     return nullptr;
   }
-  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_ACTION,L"Action");
+  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_ACTION,L"Action\tCtrl+M");
   AppendMenuW(appMenu,MF_SEPARATOR,0,nullptr);
   AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_EXIT,L"Exit");
   AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(appMenu),L"App");
@@ -611,6 +678,14 @@ int main(int argc,char** argv) {
          GetMenuItemID(contextPopup,0)!=XYTRON_MENU_CONTEXT_ACTION)
         throw std::runtime_error("Win32 menu selftest: context popup layout");
       DestroyMenu(contextPopup);
+      HACCEL shortcuts=makeNativeAccelerators();
+      ACCEL installedShortcut={};
+      const int count=shortcuts?CopyAcceleratorTableW(shortcuts,&installedShortcut,1):0;
+      if(shortcuts)DestroyAcceleratorTable(shortcuts);
+      if(count!=1 || installedShortcut.cmd!=XYTRON_MENU_ACTION ||
+         installedShortcut.key!='M' ||
+         installedShortcut.fVirt!=(FVIRTKEY|FCONTROL))
+        throw std::runtime_error("Win32 menu selftest: Ctrl+M accelerator");
       SendMessageW(testWindow,WM_COMMAND,
                    MAKEWPARAM(XYTRON_MENU_CONTEXT_ACTION,0),0);
       if(testState.contextActions!=1 || !IsWindow(testWindow))
@@ -673,6 +748,7 @@ int main(int argc,char** argv) {
     menuProbeWindow=window;
     nativeMenuActions.store(0);
     nativeContextActions.store(0);
+    nativeExitCommands.store(0);
     nativeweb::detail::registerWebView2BackendFactory();
     nativeweb::WebView view;
     menuState.view=&view;
@@ -690,11 +766,16 @@ int main(int argc,char** argv) {
     view.create(reinterpret_cast<nativeweb::NativeWindowHandle>(window),
                 "app://desktop/index.html",options);
     if (!smoke) ShowWindow(window,SW_SHOW);
+    HACCEL shortcuts=makeNativeAccelerators();
+    if(!shortcuts)throw std::runtime_error("Cannot create native accelerator table");
     MSG msg;
     while (GetMessageW(&msg,nullptr,0,0)>0) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
+      if(!TranslateAcceleratorW(window,shortcuts,&msg)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
     }
+    DestroyAcceleratorTable(shortcuts);
     if (IsWindow(window)) {
       SetWindowLongPtrW(window,GWLP_USERDATA,0);
       DestroyWindow(window);
