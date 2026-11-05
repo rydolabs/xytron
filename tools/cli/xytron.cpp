@@ -557,6 +557,18 @@ static std::string cliSupportDir(const std::string& program) {
 #endif
   throw std::runtime_error("Managed bindings support files missing; reinstall Xytron CLI");
 }
+// A CLI installed under PREFIX/bin may restore its own local Core SDK
+// without asking the user to provide the same prefix. A build-tree CLI
+// deliberately has no implicit SDK: keep --sdk for that scenario.
+static std::string installedCoreSdkForCli(const std::string& executable) {
+  const std::string support=cliSupportDir(executable);
+  const std::string suffix="/share/xytron/cli";
+  if(support.size()<=suffix.size() ||
+     support.compare(support.size()-suffix.size(),suffix.size(),suffix)!=0)
+    throw std::runtime_error(
+      "Default restore requires an installed Xytron CLI; use restore --sdk PREFIX");
+  return xytron_cli::normalizeSdk(support.substr(0,support.size()-suffix.size()));
+}
 static void generateManagedBindings(const std::string& out,bool trusted,
                                     const std::string& executable) {
   if(out.empty() || out=="." || out.find("..")!=std::string::npos ||
@@ -728,7 +740,7 @@ static void help() {
     "  publish [--output DIR] (local archive copy, inside plugin project)\n"
     "  --help / --version\n"
     "  validate (inside a generated desktop project)\n"
-    "  restore --sdk INSTALLED_CORE_SDK (desktop project; Core only)\n"
+    "  restore [--sdk INSTALLED_CORE_SDK] (local Core SDK only; no downloads)\n"
     "  build / test / doctor (desktop project; backend-only)\n"
     "  run [--plugin PROJECT_PLUGIN_PATH] [--smoke] (installed host or XYTRON_DESKTOP_HOST)\n"
     "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke]\n"
@@ -803,6 +815,9 @@ int main(int argc,char** argv) {
     if(argc==4 && std::string(argv[1])=="restore"&&
        std::string(argv[2])=="--sdk") {
       xytron_cli::appRestore(argv[3]);return 0;
+    }
+    if(argc==2 && std::string(argv[1])=="restore" && exists("xytron.json")) {
+      xytron_cli::appRestore(installedCoreSdkForCli(argv[0]));return 0;
     }
     if(argc==2 && std::string(argv[1])=="test" && exists("xytron.json")) {
       xytron_cli::appTest();return 0;
