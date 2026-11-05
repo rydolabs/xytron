@@ -40,9 +40,12 @@ bool verified = false;
 // UI-thread WM_COMMAND dispatch is the only source of the menu E2E counter.
 // Posting a command from the JS-facing method uses the same path as an
 // actual application-menu selection (without GUI automation or mouse races).
-enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402 };
+enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402,
+       XYTRON_MENU_CONTEXT_ACTION=0x7403 };
 HWND menuProbeWindow=nullptr;
 std::atomic<unsigned> nativeMenuActions(0);
+std::atomic<unsigned> nativeContextActions(0);
+HMENU makeNativeContextMenu();
 #endif
 
 std::string flag(int argc, char** argv, const std::string& prefix) {
@@ -218,6 +221,36 @@ loadUi(const std::string& name, const std::string& lang) {
         throw new Error("Unsubscribed JS callback still received native menu event");
       if(await xytron.app.menuProbeVerified()!==true)
         throw new Error("Native menu action verification failed");
+
+      // A context action has a *distinct* Win32 ID and an independent JS
+      // event subscription. The popup's actual item is checked by the host.
+      let contextEvents=0;
+      let contextToken=null;
+      const contextReceived=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error("Native context event timed out")),8000);
+        contextToken=xytron.onMessage("app.menu",payload=>{
+          ++contextEvents;
+          clearTimeout(timer);
+          resolve(payload);
+        });
+      });
+      if(await xytron.app.contextProbeTrigger()!==true)
+        throw new Error("Unable to post native context action");
+      if(await contextReceived!=="context-action" || contextEvents!==1)
+        throw new Error("Native context action not delivered to JS");
+      if(await xytron.app.contextProbeCount()!==1)
+        throw new Error("Context JS event lacked a native WM_COMMAND");
+      if(!xytron.offMessage(contextToken))
+        throw new Error("Context event listener could not unsubscribe");
+      if(await xytron.app.contextProbeTrigger()!==true)
+        throw new Error("Cannot post second native context action");
+      for(let i=0;i<50 && await xytron.app.contextProbeCount()!==2;i++)
+        await new Promise(resolve=>setTimeout(resolve,20));
+      await new Promise(resolve=>setTimeout(resolve,200));
+      if(contextEvents!==1 || await xytron.app.contextProbeCount()!==2)
+        throw new Error("Unsubscribed context JS listener still invoked");
+      if(await xytron.app.contextProbeVerified()!==true)
+        throw new Error("Native context action verification failed");
     }
     await xytron.app.complete();
   } catch (error) {
@@ -352,6 +385,30 @@ public:
         std::cout<<"checkpoint: win32-menu-js-subscriber-action-unsubscribe"<<std::endl;
         return true;
       });
+      webview_.bind("app.contextProbeTrigger",[]() {
+        const HWND hwnd=menuProbeWindow;
+        if(!hwnd || !IsWindow(hwnd))
+          throw nativeweb::Error("menu_unavailable","Native window not available");
+        HMENU popup=makeNativeContextMenu();
+        if(!popup)
+          throw nativeweb::Error("menu_unavailable","Native context menu unavailable");
+        const UINT id=GetMenuItemID(popup,0);
+        DestroyMenu(popup);
+        if(id!=XYTRON_MENU_CONTEXT_ACTION)
+          throw nativeweb::Error("menu_unavailable","Native context menu item missing");
+        if(!PostMessageW(hwnd,WM_COMMAND,MAKEWPARAM(id,0),0))
+          throw nativeweb::Error("menu_unavailable","Cannot post native context action");
+        return true;
+      });
+      webview_.bind("app.contextProbeCount",[]() {
+        return static_cast<int>(nativeContextActions.load());
+      });
+      webview_.bind("app.contextProbeVerified",[]() {
+        if(nativeContextActions.load()!=2)
+          throw nativeweb::Error("menu_unverified","Context WM_COMMAND count mismatch");
+        std::cout<<"checkpoint: win32-context-js-subscriber-action-unsubscribe"<<std::endl;
+        return true;
+      });
 #endif
       webview_.bind("app.unloadFeature",[this]() {
         webview_.unloadPlugin("feature");
@@ -423,32 +480,51 @@ struct NativeMenuState {
   nativeweb::WebView* view;
   unsigned actions;
   unsigned exits;
-  NativeMenuState():view(nullptr),actions(0),exits(0){}
+  unsigned contextActions;
+  NativeMenuState():view(nullptr),actions(0),exits(0),contextActions(0){}
 };
+// Always create the popup from the same function as the selftest/JS probe.
+// This avoids accidentally proving a synthetic command for a missing item.
+HMENU makeNativeContextMenu() {
+  HMENU popup=CreatePopupMenu();
+  if(popup && !AppendMenuW(popup,MF_STRING,
+                           XYTRON_MENU_CONTEXT_ACTION,L"Action")) {
+    DestroyMenu(popup);
+    return nullptr;
+  }
+  return popup;
+}
 LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
   NativeMenuState* state=reinterpret_cast<NativeMenuState*>(
       GetWindowLongPtrW(wnd,GWLP_USERDATA));
   if(message==WM_COMMAND && HIWORD(w)==0) {
     const unsigned command=LOWORD(w);
-    if(command==XYTRON_MENU_ACTION || command==XYTRON_MENU_EXIT) {
+    if(command==XYTRON_MENU_ACTION || command==XYTRON_MENU_EXIT ||
+       command==XYTRON_MENU_CONTEXT_ACTION) {
       if(state) {
         if(command==XYTRON_MENU_ACTION) {
           ++state->actions;
           ++nativeMenuActions;
           if(smoke)std::cout<<"checkpoint: native-win32-menu-command-action"<<std::endl;
+        } else if(command==XYTRON_MENU_CONTEXT_ACTION) {
+          ++state->contextActions;
+          ++nativeContextActions;
+          if(smoke)std::cout<<"checkpoint: native-win32-context-command-action"<<std::endl;
         } else ++state->exits;
       }
-      if(state && state->view && state->view->isCreated())
-        state->view->emit("app.menu",
-            command==XYTRON_MENU_ACTION?std::string("action"):std::string("exit"));
+      if(state && state->view && state->view->isCreated()) {
+        const std::string action=command==XYTRON_MENU_ACTION?"action":
+          command==XYTRON_MENU_CONTEXT_ACTION?"context-action":"exit";
+        state->view->emit("app.menu",action);
+      }
       if(command==XYTRON_MENU_EXIT) DestroyWindow(wnd);
       return 0;
     }
   }
-  if(message==WM_CONTEXTMENU && reinterpret_cast<HWND>(w)==wnd) {
-    HMENU popup=CreatePopupMenu();
+  const HWND source=reinterpret_cast<HWND>(w);
+  if(message==WM_CONTEXTMENU && (source==wnd || (source && IsChild(wnd,source)))) {
+    HMENU popup=makeNativeContextMenu();
     if(!popup)return 0;
-    AppendMenuW(popup,MF_STRING,XYTRON_MENU_ACTION,L"Action");
     POINT point={GET_X_LPARAM(p),GET_Y_LPARAM(p)};
     if(point.x==-1 && point.y==-1) {
       RECT rect={};GetWindowRect(wnd,&rect);
@@ -530,6 +606,15 @@ int main(int argc,char** argv) {
       SendMessageW(testWindow,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_ACTION,0),0);
       if(testState.actions!=1 || testState.exits!=0 || !IsWindow(testWindow))
         throw std::runtime_error("Win32 menu selftest: action dispatch");
+      HMENU contextPopup=makeNativeContextMenu();
+      if(!contextPopup || GetMenuItemCount(contextPopup)!=1 ||
+         GetMenuItemID(contextPopup,0)!=XYTRON_MENU_CONTEXT_ACTION)
+        throw std::runtime_error("Win32 menu selftest: context popup layout");
+      DestroyMenu(contextPopup);
+      SendMessageW(testWindow,WM_COMMAND,
+                   MAKEWPARAM(XYTRON_MENU_CONTEXT_ACTION,0),0);
+      if(testState.contextActions!=1 || !IsWindow(testWindow))
+        throw std::runtime_error("Win32 menu selftest: context callback");
       SendMessageW(testWindow,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_EXIT,0),0);
       if(testState.exits!=1 || IsWindow(testWindow))
         throw std::runtime_error("Win32 menu selftest: exit dispatch");
@@ -587,6 +672,7 @@ int main(int argc,char** argv) {
     NativeMenuState menuState;
     menuProbeWindow=window;
     nativeMenuActions.store(0);
+    nativeContextActions.store(0);
     nativeweb::detail::registerWebView2BackendFactory();
     nativeweb::WebView view;
     menuState.view=&view;
