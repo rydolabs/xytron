@@ -227,7 +227,28 @@ internal static class Program""")
                 if rc==0: raise AssertionError(language+" missing Main accepted")
             finally:
                 backup.rename(required)
-            args_managed=base+["run","--host",str(host),"--smoke"]
+            # A real mixed-language app: Python/C# Main + independently
+            # compiled C++ ABI feature in the SAME CEF/WebView2 WebView.
+            for step in (
+                ["plugin","new","feature","--language","cpp"],
+                ["plugin","build","feature","--sdk",str(sdk)],
+            ):
+                rc,details=execute(base+step,app)
+                if rc:
+                    raise AssertionError(language+" mixed native feature build failed: "+details)
+            native_file=("feature.dll" if os.name=="nt" else "libfeature.so")
+            native_rid=("win-x64" if os.name=="nt" else "linux-x64")
+            native_feature=app/"plugins"/"feature"/"bin"/native_rid/native_file
+            if not native_feature.is_file():
+                raise AssertionError(language+" mixed feature library missing")
+            native_relative=str(native_feature.relative_to(app)).replace("\\","/")
+            # Verify native plugin paths are not trusted merely because a
+            # Python or C# backend has been restored.
+            rc,_=execute(base+["run","--host",str(host),"--plugin",
+                               "plugins/feature/bin/missing.so","--smoke"],app)
+            if rc==0:
+                raise AssertionError(language+" accepted missing native feature")
+            args_managed=base+["run","--plugin",native_relative,"--smoke"]
             if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
                 args_managed=["xvfb-run","-a"]+args_managed
             rc,output=execute(args_managed,app,timeout=140)
@@ -236,6 +257,8 @@ internal static class Program""")
                 "checkpoint: native-app-ui-loaded app://desktop/index.html",
                 "checkpoint: managed-main-worker-granted-"+language,
                 "checkpoint: user-managed-main-js-verified-"+language,
+                "checkpoint: mixed-managed-main-native-feature-lifecycle-"+language,
+                "checkpoint: feature-plugin-unloaded",
                 "Real browser app:// host completed successfully."
             ]
             missing=[item for item in checkpoints if item not in output]

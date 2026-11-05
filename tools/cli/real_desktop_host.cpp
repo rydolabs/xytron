@@ -108,7 +108,8 @@ std::vector<std::string> readManagedGrant(const std::string& path) {
 }
 
 std::shared_ptr<nativeweb::AppResourceBundle>
-loadUi(const std::string& name, const std::string& lang) {
+loadUi(const std::string& name, const std::string& lang,
+       bool withNativeFeature) {
   if (name.empty()) throw std::runtime_error("Explicit --ui path is required");
   std::ifstream in(name.c_str(),std::ios::binary);
   if (!in) throw std::runtime_error("UI index not found");
@@ -188,6 +189,8 @@ loadUi(const std::string& name, const std::string& lang) {
 )HTML";
   }
   if (smoke && (lang=="python" || lang=="csharp")) {
+    if (withNativeFeature)
+      html+="<script>window.__xytronMixedNativeFeature=true;</script>";
     html+=R"HTML(
 <script>
 (async function() {
@@ -247,6 +250,41 @@ loadUi(const std::string& name, const std::string& lang) {
     try { await xytron.app.Main.method.ping(handle); }
     catch(e) { denied=true; }
     if(!denied) throw new Error("Disposed managed handle remained accessible");
+    if (window.__xytronMixedNativeFeature===true) {
+      // Actual Python/C# Main and ABI v1 C++ feature share one WebView.
+      // Test native method results, plugin->JS events, unsubscribe and unload.
+      if (await xytron.feature.hello()!=="hello")
+        throw new Error("Managed Main + native feature returned wrong value");
+      let eventCount=0;
+      const eventResult=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error("Mixed native event timeout")),5000);
+        const subscription=xytron.onMessage("feature.changed",value=>{
+          ++eventCount;
+          clearTimeout(timer);
+          resolve({value,subscription});
+        });
+      });
+      if(await xytron.feature.fire()!=="published")
+        throw new Error("Mixed native publisher method failed");
+      const delivered=await eventResult;
+      if(delivered.value!=="from-native-feature" || eventCount!==1)
+        throw new Error("Mixed feature event payload/count mismatch");
+      if(!xytron.offMessage(delivered.subscription))
+        throw new Error("Mixed feature event unsubscribe failed");
+      await xytron.feature.fire();
+      await new Promise(resolve=>setTimeout(resolve,150));
+      if(eventCount!==1)
+        throw new Error("Mixed feature event leaked after unsubscribe");
+      if(await xytron.app.unloadFeature()!==true)
+        throw new Error("Mixed feature unload was refused");
+      let featureDenied=false;
+      try { await xytron.feature.hello(); }
+      catch(_) { featureDenied=true; }
+      if(!featureDenied)
+        throw new Error("Unloaded feature still callable under managed Main");
+      if(await xytron.app.mixedVerified()!==true)
+        throw new Error("Mixed feature checkpoint not accepted");
+    }
     await xytron.app.complete();
   } catch (error) {
     await xytron.app.fail(String(error));
@@ -286,6 +324,12 @@ public:
           webview_.revokeManagedWorker("app");
         }
         webview_.destroy();
+        return true;
+      });
+      webview_.bind("app.mixedVerified",[this]() {
+        if(language_=="cpp") return false;
+        std::cout << "checkpoint: mixed-managed-main-native-feature-lifecycle-"
+                  << language_ << std::endl;
         return true;
       });
       webview_.bind("app.unloadFeature",[this]() {
@@ -398,10 +442,10 @@ int main(int argc,char** argv) {
     const std::string language=languageFlag.empty()?"cpp":languageFlag;
     if(language!="cpp"&&language!="python"&&language!="csharp")
       throw std::runtime_error("Unsupported Main language");
-    const std::shared_ptr<nativeweb::AppResourceBundle> assets=
-        loadUi(flag(argc,argv,"--ui="),language);
-    const std::string backendPlugin=flag(argc,argv,"--backend-plugin=");
     const std::string featurePlugin=flag(argc,argv,"--plugin-path=");
+    const std::shared_ptr<nativeweb::AppResourceBundle> assets=
+        loadUi(flag(argc,argv,"--ui="),language,!featurePlugin.empty());
+    const std::string backendPlugin=flag(argc,argv,"--backend-plugin=");
     const std::string pythonRunner=flag(argc,argv,"--python-runner=");
     const std::string pythonProject=flag(argc,argv,"--python-project=");
     const std::string dotnetAssembly=flag(argc,argv,"--dotnet-assembly=");
