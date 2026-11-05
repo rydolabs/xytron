@@ -730,7 +730,8 @@ static void help() {
     "  validate (inside a generated desktop project)\n"
     "  restore --sdk INSTALLED_CORE_SDK (desktop project; Core only)\n"
     "  build / test / doctor (desktop project; backend-only)\n"
-    "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke] (C++/Python/C# app)\n"
+    "  run [--plugin PROJECT_PLUGIN_PATH] [--smoke] (installed host or XYTRON_DESKTOP_HOST)\n"
+    "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke]\n"
     "  automatic browser host restore / desktop publish: NOT IMPLEMENTED\n";
 }
 int main(int argc,char** argv) {
@@ -820,9 +821,18 @@ int main(int argc,char** argv) {
                              argc>=6?argv[5]:"");
       return 0;
     }
-    if(argc==2 && std::string(argv[1])=="run" && exists("xytron.json")) {
-      std::cerr<<"Desktop run unavailable: native shell and browser engine not integrated\n";
-      return 2;
+    // Build the actual user backend before running with the locally
+    // installed host (or an explicit developer override). No engine download.
+    if(argc>=2 && std::string(argv[1])=="run" && exists("xytron.json") &&
+       (argc==2 ||
+        (argc==3 && std::string(argv[2])=="--smoke") ||
+        (argc==4 && std::string(argv[2])=="--plugin") ||
+        (argc==5 && std::string(argv[2])=="--plugin" &&
+         std::string(argv[4])=="--smoke"))) {
+      const std::string host=xytron_cli::appResolveBrowserHost();
+      xytron_cli::appBuild();
+      xytron_cli::appRunHost(host,argc==3 || argc==5,argc>=4?argv[3]:"");
+      return 0;
     }
     if(argc==4&&std::string(argv[1])=="doctor"&&
        std::string(argv[2])=="--sdk") {
