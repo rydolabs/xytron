@@ -114,6 +114,11 @@ def run():
             "checkpoint: feature-plugin-unloaded",
             "Real browser app:// host completed successfully."
         )
+        if args.engine=="webview2":
+            markers+=(
+                "checkpoint: win32-app-menu-native-callback",
+                "checkpoint: win32-context-menu-native-callback",
+            )
         missing=[marker for marker in markers if marker not in output]
         if rc!=0 or missing or "bridge-fail:" in output:
             raise AssertionError("Real native app E2E failed: exit={} missing={}".format(
@@ -261,6 +266,11 @@ internal static class Program""")
                 "checkpoint: feature-plugin-unloaded",
                 "Real browser app:// host completed successfully."
             ]
+            if args.engine=="webview2":
+                checkpoints+=(
+                    "checkpoint: win32-app-menu-native-callback",
+                    "checkpoint: win32-context-menu-native-callback",
+                )
             missing=[item for item in checkpoints if item not in output]
             if rc or missing or "bridge-fail:" in output:
                 raise AssertionError(language+" actual browser worker failed: "+
