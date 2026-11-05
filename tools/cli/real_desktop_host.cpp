@@ -1,6 +1,6 @@
 // Minimal real-engine app:// desktop host for an explicitly trusted generated UI.
 // This proves UI -> Native C++ bridge, NOT arbitrary user backend binding,
-// native menus, plugin callbacks or redistributable desktop packaging.
+// complete cross-platform native menus or redistributable desktop packaging.
 #include "nativeweb/webview.hpp"
 #include "nativeweb/app_resources.hpp"
 #include <atomic>
@@ -29,6 +29,7 @@
 #else
 #include "browser/webview2/webview2_backend.hpp"
 #include <windows.h>
+#include <windowsx.h>
 #endif
 
 namespace {
@@ -354,7 +355,7 @@ private:
 #ifndef XYTRON_APP_HOST_CEF
 // Real Win32 application/context menus; native action callbacks are sent to
 // the app:// document through the existing native-to-JS message channel.
-enum { XYTRON_MENU_RELOAD=0x7401, XYTRON_MENU_EXIT=0x7402 };
+enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402 };
 struct NativeMenuState {
   nativeweb::WebView* view;
   NativeMenuState():view(nullptr){}
@@ -364,21 +365,18 @@ LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
       GetWindowLongPtrW(wnd,GWLP_USERDATA));
   if(message==WM_COMMAND && HIWORD(w)==0) {
     const unsigned command=LOWORD(w);
-    if(command==XYTRON_MENU_RELOAD || command==XYTRON_MENU_EXIT) {
+    if(command==XYTRON_MENU_ACTION || command==XYTRON_MENU_EXIT) {
       if(state && state->view && state->view->isCreated())
         state->view->emit("app.menu",
-            command==XYTRON_MENU_RELOAD?std::string("reload"):std::string("exit"));
-      if(command==XYTRON_MENU_RELOAD) {
-        if(state && state->view && state->view->isCreated())
-          state->view->reload();
-      } else DestroyWindow(wnd);
+            command==XYTRON_MENU_ACTION?std::string("action"):std::string("exit"));
+      if(command==XYTRON_MENU_EXIT) DestroyWindow(wnd);
       return 0;
     }
   }
   if(message==WM_CONTEXTMENU && reinterpret_cast<HWND>(w)==wnd) {
     HMENU popup=CreatePopupMenu();
     if(!popup)return 0;
-    AppendMenuW(popup,MF_STRING,XYTRON_MENU_RELOAD,L"Reload");
+    AppendMenuW(popup,MF_STRING,XYTRON_MENU_ACTION,L"Action");
     POINT point={GET_X_LPARAM(p),GET_Y_LPARAM(p)};
     if(point.x==-1 && point.y==-1) {
       RECT rect={};GetWindowRect(wnd,&rect);
@@ -415,7 +413,7 @@ HWND newWindow() {
     if(bar)DestroyMenu(bar);
     return nullptr;
   }
-  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_RELOAD,L"Reload");
+  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_ACTION,L"Action");
   AppendMenuW(appMenu,MF_SEPARATOR,0,nullptr);
   AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_EXIT,L"Exit");
   AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(appMenu),L"App");
