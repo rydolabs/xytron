@@ -35,6 +35,11 @@ namespace {
 bool smoke = false;
 std::string problem;
 bool verified = false;
+#ifndef XYTRON_APP_HOST_CEF
+constexpr UINT kXytronAboutMenuId = 0x7031;
+constexpr UINT kXytronInspectMenuId = 0x7032;
+HWND gXytronHostWindow = nullptr;
+#endif
 
 std::string flag(int argc, char** argv, const std::string& prefix) {
   for (int i=1;i<argc;++i) {
@@ -126,6 +131,31 @@ loadUi(const std::string& name, const std::string& lang,
   std::string html=bytes.str();
   if (html.find('\0')!=std::string::npos)
     throw std::runtime_error("UI HTML contains invalid NUL");
+  if (smoke) {
+    // The WebView2 smoke path verifies a real Win32 HMENU command routed
+    // through hostProc into a Native->JS event. CEF's app menu remains
+    // a separate platform task and is not claimed by this test.
+    html+=R"HTML(
+<script>
+window.__xytronTestNativeMenu=async function() {
+  if (!(window.chrome && window.chrome.webview)) return;
+  const received=[];
+  const sub=xytron.onMessage("shell.menu",value=>received.push(value));
+  try {
+    if(await xytron.app.probeNativeMenu()!==true)
+      throw new Error("Win32 application menu missing or probe denied");
+    for(let i=0;i<100 && received.length<2;i++)
+      await new Promise(resolve=>setTimeout(resolve,25));
+    if(received.length!==2 || received[0]!=="app.about" ||
+       received[1]!=="context.inspect")
+      throw new Error("Native menu/context click callbacks failed: "+received.join(","));
+  } finally {
+    xytron.offMessage(sub);
+  }
+};
+</script>
+)HTML";
+  }
   if (smoke && lang=="cpp") {
     // Exercise real engine JS->native Promise. This probe does NOT claim
     // that the scaffold placeholder is the user's C++ backend.
@@ -180,6 +210,7 @@ loadUi(const std::string& name, const std::string& lang,
     catch (_) { rejected=true; }
     if (!rejected)
       throw new Error("Unloaded plugin callable was still exposed to JS");
+    await window.__xytronTestNativeMenu();
     await xytron.app.complete();
   } catch (error) {
     await xytron.app.fail(String(error));
@@ -285,6 +316,7 @@ loadUi(const std::string& name, const std::string& lang,
       if(await xytron.app.mixedVerified()!==true)
         throw new Error("Mixed feature checkpoint not accepted");
     }
+    await window.__xytronTestNativeMenu();
     await xytron.app.complete();
   } catch (error) {
     await xytron.app.fail(String(error));
@@ -326,6 +358,24 @@ public:
         webview_.destroy();
         return true;
       });
+#ifndef XYTRON_APP_HOST_CEF
+      // Only a real Win32 menu owned by this window can produce these
+      // actions. Send commands into the OS WndProc; do not fake JS events.
+      webview_.bind("app.probeNativeMenu",[]() {
+        if(!gXytronHostWindow || !IsWindow(gXytronHostWindow))
+          return false;
+        const HMENU bar=GetMenu(gXytronHostWindow);
+        if(!bar || GetMenuItemCount(bar)!=1)
+          return false;
+        const HMENU menu=GetSubMenu(bar,0);
+        if(!menu || GetMenuItemID(menu,0)!=kXytronAboutMenuId)
+          return false;
+        return PostMessageW(gXytronHostWindow,WM_COMMAND,
+                            MAKEWPARAM(kXytronAboutMenuId,0),0)!=0 &&
+               PostMessageW(gXytronHostWindow,WM_COMMAND,
+                            MAKEWPARAM(kXytronInspectMenuId,0),0)!=0;
+      });
+#endif
       webview_.bind("app.mixedVerified",[this]() {
         if(language_=="cpp") return false;
         std::cout << "checkpoint: mixed-managed-main-native-feature-lifecycle-"
@@ -397,6 +447,31 @@ private:
 
 #ifndef XYTRON_APP_HOST_CEF
 LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
+  if(message==WM_COMMAND && HIWORD(w)==0) {
+    const UINT action=LOWORD(w);
+    if(action==kXytronAboutMenuId || action==kXytronInspectMenuId) {
+      nativeweb::WebView* view=reinterpret_cast<nativeweb::WebView*>(
+        GetWindowLongPtrW(wnd,GWLP_USERDATA));
+      if(view) {
+        const bool appMenu=action==kXytronAboutMenuId;
+        view->postMessage("shell.menu",
+                          std::string(appMenu?"app.about":"context.inspect"));
+        std::cout<<"checkpoint: win32-"<<(appMenu?"app-menu":"context-menu")
+                 <<"-native-callback"<<std::endl;
+      }
+      return 0;
+    }
+  }
+  if(message==WM_CONTEXTMENU && reinterpret_cast<HWND>(w)==wnd) {
+    HMENU menu=CreatePopupMenu();
+    if(!menu) return 0;
+    AppendMenuW(menu,MF_STRING,kXytronInspectMenuId,L"Inspect");
+    POINT point={GET_X_LPARAM(p),GET_Y_LPARAM(p)};
+    if(p==static_cast<LPARAM>(-1)) GetCursorPos(&point);
+    TrackPopupMenu(menu,TPM_RIGHTBUTTON,point.x,point.y,0,wnd,nullptr);
+    DestroyMenu(menu);
+    return 0;
+  }
   if (message==WM_CLOSE) {
     DestroyWindow(wnd);
     return 0;
@@ -415,9 +490,23 @@ HWND newWindow() {
   wc.lpszClassName=className;
   if (!RegisterClassW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)
     return nullptr;
-  return CreateWindowExW(0,className,L"Xytron App",WS_OVERLAPPEDWINDOW,
-                         CW_USEDEFAULT,CW_USEDEFAULT,900,640,
-                         nullptr,nullptr,wc.hInstance,nullptr);
+  HWND window=CreateWindowExW(0,className,L"Xytron App",WS_OVERLAPPEDWINDOW,
+                              CW_USEDEFAULT,CW_USEDEFAULT,900,640,
+                              nullptr,nullptr,wc.hInstance,nullptr);
+  if(!window) return nullptr;
+  HMENU bar=CreateMenu();
+  HMENU application=CreatePopupMenu();
+  if(!bar || !application ||
+     !AppendMenuW(application,MF_STRING,kXytronAboutMenuId,L"About Xytron") ||
+     !AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(application),
+                  L"Application") ||
+     !SetMenu(window,bar)) {
+    if(bar) DestroyMenu(bar);
+    else if(application) DestroyMenu(application);
+    DestroyWindow(window);
+    return nullptr;
+  }
+  return window;
 }
 #endif
 } // namespace
@@ -487,6 +576,8 @@ int main(int argc,char** argv) {
     if (!window) throw std::runtime_error("Cannot create Win32 window");
     nativeweb::detail::registerWebView2BackendFactory();
     nativeweb::WebView view;
+    gXytronHostWindow=window;
+    SetWindowLongPtrW(window,GWLP_USERDATA,reinterpret_cast<LONG_PTR>(&view));
     Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,managedOps);
     view.setListener(&listener);
     if(language=="cpp" && view.loadPlugin(backendPlugin)!="app")
@@ -504,6 +595,8 @@ int main(int argc,char** argv) {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
+    SetWindowLongPtrW(window,GWLP_USERDATA,0);
+    gXytronHostWindow=nullptr;
     if (IsWindow(window)) DestroyWindow(window);
 #endif
     if (smoke && !verified) {
