@@ -352,7 +352,44 @@ private:
 };
 
 #ifndef XYTRON_APP_HOST_CEF
+// Real Win32 application/context menus; native action callbacks are sent to
+// the app:// document through the existing native-to-JS message channel.
+enum { XYTRON_MENU_RELOAD=0x7401, XYTRON_MENU_EXIT=0x7402 };
+struct NativeMenuState {
+  nativeweb::WebView* view;
+  NativeMenuState():view(nullptr){}
+};
 LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
+  NativeMenuState* state=reinterpret_cast<NativeMenuState*>(
+      GetWindowLongPtrW(wnd,GWLP_USERDATA));
+  if(message==WM_COMMAND && HIWORD(w)==0) {
+    const unsigned command=LOWORD(w);
+    if(command==XYTRON_MENU_RELOAD || command==XYTRON_MENU_EXIT) {
+      if(state && state->view && state->view->isCreated())
+        state->view->emit("app.menu",
+            command==XYTRON_MENU_RELOAD?std::string("reload"):std::string("exit"));
+      if(command==XYTRON_MENU_RELOAD) {
+        if(state && state->view && state->view->isCreated())
+          state->view->reload();
+      } else DestroyWindow(wnd);
+      return 0;
+    }
+  }
+  if(message==WM_CONTEXTMENU && reinterpret_cast<HWND>(w)==wnd) {
+    HMENU popup=CreatePopupMenu();
+    if(!popup)return 0;
+    AppendMenuW(popup,MF_STRING,XYTRON_MENU_RELOAD,L"Reload");
+    POINT point={GET_X_LPARAM(p),GET_Y_LPARAM(p)};
+    if(point.x==-1 && point.y==-1) {
+      RECT rect={};GetWindowRect(wnd,&rect);
+      point.x=(rect.left+rect.right)/2;point.y=(rect.top+rect.bottom)/2;
+    }
+    const UINT chosen=TrackPopupMenu(popup,
+        TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,0,wnd,nullptr);
+    DestroyMenu(popup);
+    if(chosen)SendMessageW(wnd,WM_COMMAND,MAKEWPARAM(chosen,0),0);
+    return 0;
+  }
   if (message==WM_CLOSE) {
     DestroyWindow(wnd);
     return 0;
@@ -371,9 +408,22 @@ HWND newWindow() {
   wc.lpszClassName=className;
   if (!RegisterClassW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)
     return nullptr;
-  return CreateWindowExW(0,className,L"Xytron App",WS_OVERLAPPEDWINDOW,
-                         CW_USEDEFAULT,CW_USEDEFAULT,900,640,
-                         nullptr,nullptr,wc.hInstance,nullptr);
+  HMENU bar=CreateMenu();
+  HMENU appMenu=CreatePopupMenu();
+  if(!bar || !appMenu) {
+    if(appMenu)DestroyMenu(appMenu);
+    if(bar)DestroyMenu(bar);
+    return nullptr;
+  }
+  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_RELOAD,L"Reload");
+  AppendMenuW(appMenu,MF_SEPARATOR,0,nullptr);
+  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_EXIT,L"Exit");
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(appMenu),L"App");
+  HWND wnd=CreateWindowExW(0,className,L"Xytron App",WS_OVERLAPPEDWINDOW,
+                          CW_USEDEFAULT,CW_USEDEFAULT,900,640,
+                          nullptr,bar,wc.hInstance,nullptr);
+  if(!wnd)DestroyMenu(bar);
+  return wnd;
 }
 #endif
 } // namespace
@@ -441,8 +491,12 @@ int main(int argc,char** argv) {
 #else
     HWND window=newWindow();
     if (!window) throw std::runtime_error("Cannot create Win32 window");
+    NativeMenuState menuState;
     nativeweb::detail::registerWebView2BackendFactory();
     nativeweb::WebView view;
+    menuState.view=&view;
+    SetWindowLongPtrW(window,GWLP_USERDATA,
+        reinterpret_cast<LONG_PTR>(&menuState));
     Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,managedOps);
     view.setListener(&listener);
     if(language=="cpp" && view.loadPlugin(backendPlugin)!="app")
@@ -460,7 +514,10 @@ int main(int argc,char** argv) {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
-    if (IsWindow(window)) DestroyWindow(window);
+    if (IsWindow(window)) {
+      SetWindowLongPtrW(window,GWLP_USERDATA,0);
+      DestroyWindow(window);
+    }
 #endif
     if (smoke && !verified) {
       std::cerr << "Generated-app bridge smoke incomplete: "<<problem<<std::endl;
