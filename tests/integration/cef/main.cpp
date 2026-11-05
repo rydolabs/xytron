@@ -561,7 +561,10 @@ public:
                     "example_cs.Player.create", "example_cs.Player.method.Hit",
                     "example_cs.Player.get.Health", "example_cs.Player.set.Health",
                     "example_cs.Player.dispose"
-                }, {managedDotnetRuntime_, managedDotnetAssembly_}, 5000);
+                // The first .NET invocation cold-starts the CLR/JIT on
+                // shared CI runners. Keep a finite native deadline, but do
+                // not confuse a slower cold start with worker unavailability.
+                }, {managedDotnetRuntime_, managedDotnetAssembly_}, 12000);
             }
             managedReady_.store(true);
         } catch (const std::exception& error) {
