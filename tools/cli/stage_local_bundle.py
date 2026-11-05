@@ -16,7 +16,9 @@ import sys
 SKIP_DIRS = {"__pycache__", ".pytest_cache"}
 RUNTIME_EXT = {".dll", ".so", ".pak", ".bin", ".dat", ".json", ".manifest"}
 MAX_FILES = 1800
-MAX_BYTES = 950 * 1024 * 1024
+# Pinned CEF Linux distributions can contain a >1 GiB libcef.so.
+# Bound a single file, but do not reject a valid distribution.
+MAX_BYTES = 3 * 1024 * 1024 * 1024
 
 
 def checked_file(path: Path, *, project: bool = False) -> Path:
@@ -162,8 +164,16 @@ def local_bundle(app: Path, host: Path, output_name: str, plugin: str):
         if feature:
             args.append('"--plugin-path={ROOT}plugins/' + feature + '"')
         if os.name == "nt":
+            app_id = manifest["app"]["id"]
+            if (not isinstance(app_id, str) or not app_id or
+                any(c not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for c in app_id)):
+                raise ValueError("Invalid app id for WebView2 profile")
             win_args = [x.replace("{ROOT}", "%ROOT%") for x in args]
             cmd = ('@echo off\r\nsetlocal\r\nset "ROOT=%~dp0"\r\n'
+                   'if not defined LOCALAPPDATA set "LOCALAPPDATA=%TEMP%"\r\n'
+                   'set "WEBVIEW2_USER_DATA_FOLDER=%LOCALAPPDATA%\\Xytron\\' +
+                   app_id + '\\' + output_name + '\\WebView2"\r\n'
+                   'if not exist "%WEBVIEW2_USER_DATA_FOLDER%" mkdir "%WEBVIEW2_USER_DATA_FOLDER%" >nul 2>&1\r\n'
                    'pushd "%ROOT%runtime"\r\n'
                    '"%ROOT%runtime\\xytron_desktop_host.exe" ' +
                    " ".join(win_args).replace("/", "\\") +
