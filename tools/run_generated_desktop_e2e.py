@@ -78,11 +78,11 @@ def run():
             rc,output=execute(base+argv,project)
             if rc: raise AssertionError("Feature plugin scaffold/build failed: "+" ".join(argv))
         if os.name=="nt":
-            feature=project/"plugins/feature/build/Release/feature.dll"
+            feature=project/"plugins/feature/bin/win-x64/feature.dll"
         elif sys.platform=="darwin":
             feature=project/"plugins/feature/build/libfeature.dylib"
         else:
-            feature=project/"plugins/feature/build/libfeature.so"
+            feature=project/"plugins/feature/bin/linux-x64/libfeature.so"
         if not feature.is_file():
             raise AssertionError("Built feature ABI plugin missing: "+str(feature))
         # Fail closed when a missing feature binary is explicitly requested.
