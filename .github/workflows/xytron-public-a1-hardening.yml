@@ -40,6 +40,12 @@ jobs:
         run: python -m unittest discover -s bindings/python/tests -p "test_*.py" -v
       - name: Install Core SDK
         run: cmake --install build/a1-public --config Release --prefix "${{ github.workspace }}/a1-public-sdk"
+      - name: Verify installed CLI default Core restore without --sdk
+        run: >
+          cmake
+          "-DXYTRON=${{ github.workspace }}/a1-public-sdk/bin/${{ matrix.os == 'windows-2022' && 'xytron.exe' || 'xytron' }}"
+          "-DTEST_ROOT=${{ github.workspace }}/build/a1-auto-restore"
+          -P tools/cli/test_auto_restore.cmake
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
