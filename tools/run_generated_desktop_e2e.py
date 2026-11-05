@@ -167,7 +167,7 @@ def run():
             if not built_backend.is_file():
                 built_backend=project/".xytron-build/out/xytron_app_backend.dll"
             marker=bundle/"xytron.portable"
-            if marker.read_bytes()!=b"xytron-webview2-cpp-local-v1\\n":
+            if marker.read_bytes()!=b"xytron-webview2-cpp-local-v1\n":
                 raise AssertionError("Portable app identity marker missing")
             if (not launcher.is_file() or staged_host.read_bytes()!=host.read_bytes()
                 or staged_backend.read_bytes()!=built_backend.read_bytes()
