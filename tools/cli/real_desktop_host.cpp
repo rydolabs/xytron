@@ -1,6 +1,6 @@
 // Minimal real-engine app:// desktop host for an explicitly trusted generated UI.
 // This proves UI -> Native C++ bridge, NOT arbitrary user backend binding,
-// native menus, plugin callbacks or redistributable desktop packaging.
+// complete cross-platform native menus or redistributable desktop packaging.
 #include "nativeweb/webview.hpp"
 #include "nativeweb/app_resources.hpp"
 #include <atomic>
@@ -29,6 +29,7 @@
 #else
 #include "browser/webview2/webview2_backend.hpp"
 #include <windows.h>
+#include <windowsx.h>
 #endif
 
 namespace {
@@ -352,7 +353,47 @@ private:
 };
 
 #ifndef XYTRON_APP_HOST_CEF
+// Real Win32 application/context menus; native action callbacks are sent to
+// the app:// document through the existing native-to-JS message channel.
+enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402 };
+struct NativeMenuState {
+  nativeweb::WebView* view;
+  unsigned actions;
+  unsigned exits;
+  NativeMenuState():view(nullptr),actions(0),exits(0){}
+};
 LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
+  NativeMenuState* state=reinterpret_cast<NativeMenuState*>(
+      GetWindowLongPtrW(wnd,GWLP_USERDATA));
+  if(message==WM_COMMAND && HIWORD(w)==0) {
+    const unsigned command=LOWORD(w);
+    if(command==XYTRON_MENU_ACTION || command==XYTRON_MENU_EXIT) {
+      if(state) {
+        if(command==XYTRON_MENU_ACTION)++state->actions;
+        else ++state->exits;
+      }
+      if(state && state->view && state->view->isCreated())
+        state->view->emit("app.menu",
+            command==XYTRON_MENU_ACTION?std::string("action"):std::string("exit"));
+      if(command==XYTRON_MENU_EXIT) DestroyWindow(wnd);
+      return 0;
+    }
+  }
+  if(message==WM_CONTEXTMENU && reinterpret_cast<HWND>(w)==wnd) {
+    HMENU popup=CreatePopupMenu();
+    if(!popup)return 0;
+    AppendMenuW(popup,MF_STRING,XYTRON_MENU_ACTION,L"Action");
+    POINT point={GET_X_LPARAM(p),GET_Y_LPARAM(p)};
+    if(point.x==-1 && point.y==-1) {
+      RECT rect={};GetWindowRect(wnd,&rect);
+      point.x=(rect.left+rect.right)/2;point.y=(rect.top+rect.bottom)/2;
+    }
+    const UINT chosen=TrackPopupMenu(popup,
+        TPM_RETURNCMD|TPM_RIGHTBUTTON,point.x,point.y,0,wnd,nullptr);
+    DestroyMenu(popup);
+    if(chosen)SendMessageW(wnd,WM_COMMAND,MAKEWPARAM(chosen,0),0);
+    return 0;
+  }
   if (message==WM_CLOSE) {
     DestroyWindow(wnd);
     return 0;
@@ -371,9 +412,22 @@ HWND newWindow() {
   wc.lpszClassName=className;
   if (!RegisterClassW(&wc) && GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)
     return nullptr;
-  return CreateWindowExW(0,className,L"Xytron App",WS_OVERLAPPEDWINDOW,
-                         CW_USEDEFAULT,CW_USEDEFAULT,900,640,
-                         nullptr,nullptr,wc.hInstance,nullptr);
+  HMENU bar=CreateMenu();
+  HMENU appMenu=CreatePopupMenu();
+  if(!bar || !appMenu) {
+    if(appMenu)DestroyMenu(appMenu);
+    if(bar)DestroyMenu(bar);
+    return nullptr;
+  }
+  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_ACTION,L"Action");
+  AppendMenuW(appMenu,MF_SEPARATOR,0,nullptr);
+  AppendMenuW(appMenu,MF_STRING,XYTRON_MENU_EXIT,L"Exit");
+  AppendMenuW(bar,MF_POPUP,reinterpret_cast<UINT_PTR>(appMenu),L"App");
+  HWND wnd=CreateWindowExW(0,className,L"Xytron App",WS_OVERLAPPEDWINDOW,
+                          CW_USEDEFAULT,CW_USEDEFAULT,900,640,
+                          nullptr,bar,wc.hInstance,nullptr);
+  if(!wnd)DestroyMenu(bar);
+  return wnd;
 }
 #endif
 } // namespace
@@ -394,6 +448,29 @@ int main(int argc,char** argv) {
     for(int i=1;i<argc;++i) {
       if (std::string(argv[i])=="--smoke") smoke=true;
     }
+#ifndef XYTRON_APP_HOST_CEF
+    // Win32-only runner check: menu resource and WM_COMMAND dispatch,
+    // without requiring WebView2 installation or a display screenshot.
+    if(argc==2 && std::string(argv[1])=="--menu-selftest") {
+      HWND testWindow=newWindow();
+      if(!testWindow)throw std::runtime_error("Win32 menu selftest: window");
+      HMENU bar=GetMenu(testWindow);
+      if(!bar || GetMenuItemCount(bar)!=1 ||
+         !GetSubMenu(bar,0) || GetMenuItemCount(GetSubMenu(bar,0))!=3)
+        throw std::runtime_error("Win32 menu selftest: menu structure");
+      NativeMenuState testState;
+      SetWindowLongPtrW(testWindow,GWLP_USERDATA,
+          reinterpret_cast<LONG_PTR>(&testState));
+      SendMessageW(testWindow,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_ACTION,0),0);
+      if(testState.actions!=1 || testState.exits!=0 || !IsWindow(testWindow))
+        throw std::runtime_error("Win32 menu selftest: action dispatch");
+      SendMessageW(testWindow,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_EXIT,0),0);
+      if(testState.exits!=1 || IsWindow(testWindow))
+        throw std::runtime_error("Win32 menu selftest: exit dispatch");
+      std::cout<<"Win32 native application menu selftest: PASS"<<std::endl;
+      return 0;
+    }
+#endif
     const std::string languageFlag=flag(argc,argv,"--backend-language=");
     const std::string language=languageFlag.empty()?"cpp":languageFlag;
     if(language!="cpp"&&language!="python"&&language!="csharp")
@@ -441,8 +518,12 @@ int main(int argc,char** argv) {
 #else
     HWND window=newWindow();
     if (!window) throw std::runtime_error("Cannot create Win32 window");
+    NativeMenuState menuState;
     nativeweb::detail::registerWebView2BackendFactory();
     nativeweb::WebView view;
+    menuState.view=&view;
+    SetWindowLongPtrW(window,GWLP_USERDATA,
+        reinterpret_cast<LONG_PTR>(&menuState));
     Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,managedOps);
     view.setListener(&listener);
     if(language=="cpp" && view.loadPlugin(backendPlugin)!="app")
@@ -460,7 +541,10 @@ int main(int argc,char** argv) {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
-    if (IsWindow(window)) DestroyWindow(window);
+    if (IsWindow(window)) {
+      SetWindowLongPtrW(window,GWLP_USERDATA,0);
+      DestroyWindow(window);
+    }
 #endif
     if (smoke && !verified) {
       std::cerr << "Generated-app bridge smoke incomplete: "<<problem<<std::endl;
