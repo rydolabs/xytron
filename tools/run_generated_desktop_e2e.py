@@ -166,6 +166,9 @@ def run():
             built_backend=(project/".xytron-build/out/Release/xytron_app_backend.dll")
             if not built_backend.is_file():
                 built_backend=project/".xytron-build/out/xytron_app_backend.dll"
+            marker=bundle/"xytron.portable"
+            if marker.read_bytes()!=b"xytron-webview2-cpp-local-v1\\n":
+                raise AssertionError("Portable app identity marker missing")
             if (not launcher.is_file() or staged_host.read_bytes()!=host.read_bytes()
                 or staged_backend.read_bytes()!=built_backend.read_bytes()
                 or staged_feature.read_bytes()!=feature.read_bytes()
@@ -180,20 +183,34 @@ def run():
                     backup=original.with_name(original.name+".source-hidden")
                     original.rename(backup)
                     hidden.append((original,backup))
-                command=["cmd.exe","/d","/c",str(launcher),"--smoke"]
-                rc,portable_output=execute(command,bundle,timeout=140)
-                for marker in (
-                    "checkpoint: user-cpp-backend-and-feature-plugin",
-                    "checkpoint: plugin-native-js-event-unsubscribe",
-                    "checkpoint: win32-menu-js-subscriber-action-unsubscribe",
-                    "checkpoint: win32-context-js-subscriber-action-unsubscribe",
-                    "checkpoint: win32-exit-js-subscriber",
-                    "xytron native desktop host: PASS",
+                for mode,command in (
+                    ("direct native EXE", [str(staged_host),"--smoke"]),
+                    ("batch launcher", ["cmd.exe","/d","/c",str(launcher),"--smoke"]),
                 ):
-                    if marker not in portable_output:
-                        raise AssertionError("Detached WebView2 bundle missing "+marker)
-                if rc: raise AssertionError("Detached local bundle exit="+str(rc))
-                print("Windows portable local C++ WebView2 staging smoke: PASS",
+                    rc,portable_output=execute(command,bundle,timeout=140)
+                    for required in (
+                        "checkpoint: user-cpp-backend-and-feature-plugin",
+                        "checkpoint: plugin-native-js-event-unsubscribe",
+                        "checkpoint: win32-menu-js-subscriber-action-unsubscribe",
+                        "checkpoint: win32-context-js-subscriber-action-unsubscribe",
+                        "checkpoint: win32-exit-js-subscriber",
+                        "xytron native desktop host: PASS",
+                    ):
+                        if required not in portable_output:
+                            raise AssertionError(mode+" bundle missing "+required)
+                    if rc: raise AssertionError(mode+" bundle exit="+str(rc))
+                # The packaged EXE must not trust a malformed identity or
+                # allow a caller to replace its UI/backend arguments.
+                marker_backup=marker.read_bytes()
+                marker.write_bytes(b"CORRUPTED")
+                try:
+                    rc,_=execute([str(staged_host),"--smoke"],bundle)
+                    if rc==0: raise AssertionError("Tampered portable marker accepted")
+                finally:
+                    marker.write_bytes(marker_backup)
+                rc,_=execute([str(staged_host),"--ui=outside.html"],bundle)
+                if rc==0: raise AssertionError("Portable app allowed arbitrary UI override")
+                print("Windows direct EXE and batch local WebView2 staging smoke: PASS",
                       flush=True)
             finally:
                 for original,backup in reversed(hidden):
