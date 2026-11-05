@@ -326,7 +326,7 @@ public:
 #else
              "dotnet"
 #endif
-           ),dotnetAssembly_},5000);
+           ),dotnetAssembly_},12000);
       } else {
         throw std::runtime_error("Unsupported managed Main language");
       }

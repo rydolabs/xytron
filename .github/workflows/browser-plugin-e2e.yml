@@ -57,6 +57,13 @@ jobs:
         run: python tools/run_generated_desktop_e2e.py --engine cef --xytron build/app-core/xytron --sdk build/app-sdk --host build/cef/bin/xytron_desktop_host
       - name: Measure real browser JS-Native RTT (diagnostic only)
         run: python tools/run_bridge_benchmark.py --engine cef --build-dir build/cef --output-dir build/bridge-benchmark --warmup 20 --samples 100 --timeout 130
+      - name: Preserve Linux CEF CTest failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xytron-linux-cef-ctest-failure
+          path: build/cef/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
       - name: Upload raw bridge latency samples
         if: always()
         uses: actions/upload-artifact@v4

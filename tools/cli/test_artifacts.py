@@ -201,6 +201,18 @@ def test_all(exe, repo, sdk, require_dotnet):
                 execute(exe, cpp, "build", "--sdk", sdk)
                 assert staged.read_bytes() == compiled.read_bytes()
                 checks += 1
+            # Cross-platform hard-link denial: the generated platform entry
+            # must not overwrite a second name for an outside file (NTFS/ext4).
+            sentinel = root / "external-hardlink-victim"
+            sentinel.write_bytes(b"DO_NOT_OVERWRITE")
+            staged.unlink()
+            os.link(sentinel, staged)
+            execute(exe, cpp, "build", "--sdk", sdk, expect=1)
+            assert sentinel.read_bytes() == b"DO_NOT_OVERWRITE"
+            staged.unlink()
+            execute(exe, cpp, "build", "--sdk", sdk)
+            assert staged.read_bytes() == compiled.read_bytes()
+            checks += 1
             execute(exe, cpp, "pack")
             native = cpp / "dist/camera-1.0.0-linux-x64.xplugin"
             if os.name == "nt":

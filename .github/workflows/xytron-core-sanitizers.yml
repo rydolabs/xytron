@@ -1,0 +1,43 @@
+name: Xytron A1 Core + Plugin Sanitizers
+'on':
+  pull_request:
+    paths:
+      - '.github/workflows/xytron-core-sanitizers.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'tools/cli/**'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-sanitizers:
+    name: linux-${{ matrix.compiler }}-asan-ubsan
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Configure C++11 with AddressSanitizer + UndefinedBehaviorSanitizer
+        run: >
+          cmake -S . -B build/a1-sanitize
+          -DNATIVEWEB_BUILD_TESTS=ON
+          -DCMAKE_BUILD_TYPE=Debug
+          "-DCMAKE_CXX_COMPILER=${{ matrix.compiler }}"
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+          "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined"
+      - name: Build native Core, CLI, plugin fixtures and tests
+        run: cmake --build build/a1-sanitize --parallel 3
+      - name: Execute Core, Plugin and CLI regressions under sanitizers
+        run: ctest --test-dir build/a1-sanitize --output-on-failure --timeout 100 -R '^(core[.]|plugin[.]|cli[.])'
