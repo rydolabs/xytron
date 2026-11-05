@@ -6,6 +6,10 @@ name: Xytron Public A1 hardening 4-OS CI
     paths:
       - '.github/workflows/xytron-public-a1-hardening.yml'
       - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
       - 'tools/cli/**'
       - 'bindings/python/**'
   workflow_dispatch:
