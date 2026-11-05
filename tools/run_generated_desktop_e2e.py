@@ -329,7 +329,24 @@ internal static class Program""")
                 if rc==0: raise AssertionError(language+" missing Main accepted")
             finally:
                 backup.rename(required)
-            args_managed=base+["run","--host",str(host),"--smoke"]
+            # A real, independent C++ ABI Plugin must coexist with this
+            # user-authored Python/C# Main in the same OS browser host.
+            # Compile from the generated project rather than using a mock.
+            for plugin_step in (
+                ["plugin","new","feature","--language","cpp"],
+                ["plugin","build","feature","--sdk",str(sdk)],
+            ):
+                rc,_=execute(base+plugin_step,app)
+                if rc: raise AssertionError(language+" native Plugin build failed")
+            if os.name=="nt":
+                managed_feature=app/"plugins/feature/bin/win-x64/feature.dll"
+            else:
+                managed_feature=app/"plugins/feature/bin/linux-x64/libfeature.so"
+            if not managed_feature.is_file():
+                raise AssertionError(language+" native feature binary missing")
+            managed_plugin_path=str(managed_feature.relative_to(app)).replace("\\","/")
+            args_managed=base+["run","--host",str(host),
+                               "--plugin",managed_plugin_path,"--smoke"]
             if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
                 args_managed=["xvfb-run","-a"]+args_managed
             rc,output=execute(args_managed,app,timeout=140)
@@ -338,6 +355,8 @@ internal static class Program""")
                 "checkpoint: native-app-ui-loaded app://desktop/index.html",
                 "checkpoint: managed-main-worker-granted-"+language,
                 "checkpoint: user-managed-main-js-verified-"+language,
+                "checkpoint: managed-main-native-feature-verified-"+language,
+                "checkpoint: feature-plugin-unloaded",
                 "Real browser app:// host completed successfully."
             ]
             missing=[item for item in checkpoints if item not in output]
