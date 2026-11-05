@@ -29,6 +29,7 @@
 #else
 #include "browser/webview2/webview2_backend.hpp"
 #include <windows.h>
+#include <windowsx.h>
 #endif
 
 namespace {
