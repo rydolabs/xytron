@@ -413,12 +413,8 @@ inline void appPublishWebView2Local(const std::string& target) {
   std::ostringstream script;
   script<<"@echo off\r\nsetlocal DisableDelayedExpansion\r\n"
         <<"set \"APPROOT=%~dp0\"\r\n"
-        <<"\"%APPROOT%xytron_desktop_host.exe\" "
-        <<"\"--ui=%APPROOT%ui\\index.html\" "
-        <<"\"--backend-plugin=%APPROOT%bin\\xytron_app_backend.dll\"";
-  if(hasFeature)
-    script<<" \"--plugin-path=%APPROOT%bin\\feature.dll\"";
-  script<<" %*\r\nexit /b %ERRORLEVEL%\r\n";
+        <<"\"%APPROOT%xytron_desktop_host.exe\" %*\r\n"
+        <<"exit /b %ERRORLEVEL%\r\n";
   std::ofstream launcher((target+"/launch.cmd").c_str(),
                          std::ios::binary|std::ios::trunc);
   if(!launcher)throw std::runtime_error("Cannot create local app launcher");
