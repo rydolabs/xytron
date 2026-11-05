@@ -343,6 +343,89 @@ inline void appDoctorRuntime() {
            <<"Binary/UI/backend checked; browser engine initialization, OS native "
               "menus, sandbox and redistribution remain E2E/release gates.\n";
 }
+// Pre-release, LOCAL development staging only. This deliberately does not
+// package CEF, the WebView2 Evergreen runtime, arbitrary Modules or managed
+// runtimes; these are separate legal/engineering acceptance gates.
+inline void appCopyStagedFile(const std::string& from,const std::string& to,
+                             bool fromProject) {
+  if(fromProject)projectPath(from,false);
+  checkedProjectOutput(to,true);
+  std::ifstream in(from.c_str(),std::ios::binary);
+  if(!in)throw std::runtime_error("Publication input missing: "+from);
+  in.seekg(0,std::ios::end);
+  const std::streamoff length=in.tellg();
+  if(length<=0 || length>128LL*1024*1024)
+    throw std::runtime_error("Invalid publication input size: "+from);
+  in.seekg(0,std::ios::beg);
+  std::ofstream out(to.c_str(),std::ios::binary|std::ios::trunc);
+  if(!out)throw std::runtime_error("Cannot stage publication file: "+to);
+  out<<in.rdbuf();
+  out.close();
+  if(!out || in.bad())
+    throw std::runtime_error("Publication copy failed: "+to);
+}
+inline void appPublishWebView2Local(const std::string& target) {
+#ifndef _WIN32
+  (void)target;
+  throw std::runtime_error(
+    "Local app staging currently supports Windows WebView2 only; Linux CEF resources/rights pending");
+#else
+  const std::string lang=appMainLanguage();
+  if(lang!="cpp")
+    throw std::runtime_error(
+      "Local WebView2 staging requires a compiled C++ Main; managed runtime closure pending");
+  const JsonObjectFields manifest(readProjectFile("xytron.json"));
+  if(!projectArrayObjects(manifest.raw("modules")).empty())
+    throw std::runtime_error("Embedded Modules are not yet packaged; publication denied");
+  if(target.size()<=5 || target.compare(0,5,"dist/")!=0 ||
+     !projectIdentifier(target.substr(5)))
+    throw std::runtime_error("Output must be a fresh dist/NAME inside the project");
+  const std::string sdk=restoredSdk();
+  (void)sdk;
+  const std::string host=appResolveBrowserHost();
+  appCheckBrowserHost(host);
+  appTest();
+  const std::string backend=appBackendPlugin();
+  const std::string feature="plugins/feature/bin/win-x64/feature.dll";
+  const bool hasFeature=appExists(feature);
+  if(hasFeature)projectPath(feature,false);
+  if(appExists(target))
+    throw std::runtime_error("Refusing to overwrite existing app staging directory");
+  appDir("dist");
+  appDir(target);
+  appDir(target+"/ui");
+  appDir(target+"/bin");
+  appCopyStagedFile(host,target+"/xytron_desktop_host.exe",false);
+  appCopyStagedFile("ui/index.html",target+"/ui/index.html",true);
+  appCopyStagedFile(backend,target+"/bin/xytron_app_backend.dll",true);
+  if(hasFeature)
+    appCopyStagedFile(feature,target+"/bin/feature.dll",true);
+  checkedProjectOutput(target+"/xytron.portable",true);
+  std::ofstream marker((target+"/xytron.portable").c_str(),
+                       std::ios::binary|std::ios::trunc);
+  if(!marker)throw std::runtime_error("Cannot create local app identity marker");
+  marker<<"xytron-webview2-cpp-local-v1\n";
+  marker.close();
+  if(!marker)throw std::runtime_error("Cannot finalize local app marker");
+  // No absolute development paths embedded: portable on the same machine
+  // with an installed Evergreen WebView2 runtime and compatible VC runtime.
+  checkedProjectOutput(target+"/launch.cmd",true);
+  std::ostringstream script;
+  script<<"@echo off\r\nsetlocal DisableDelayedExpansion\r\n"
+        <<"set \"APPROOT=%~dp0\"\r\n"
+        <<"\"%APPROOT%xytron_desktop_host.exe\" %*\r\n"
+        <<"exit /b %ERRORLEVEL%\r\n";
+  std::ofstream launcher((target+"/launch.cmd").c_str(),
+                         std::ios::binary|std::ios::trunc);
+  if(!launcher)throw std::runtime_error("Cannot create local app launcher");
+  launcher<<script.str();
+  launcher.close();
+  if(!launcher)throw std::runtime_error("Cannot finalize local app launcher");
+  std::cout<<"Windows WebView2 local app staging: "<<target<<"/launch.cmd\n"
+           <<"LOCAL DEVELOPMENT ONLY: no CEF/managed runtimes, signing, WebView2 "
+              "Evergreen installer, license notices or public redistribution included.\n";
+#endif
+}
 inline void appRunHost(const std::string& path, bool smoke,
                        const std::string& featurePath) {
   const std::string language=appMainLanguage();

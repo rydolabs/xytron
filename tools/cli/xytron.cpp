@@ -797,7 +797,8 @@ static void help() {
     "  doctor --runtime (installed host, UI and actual built backend preflight)\n"
     "  run [--plugin PROJECT_PLUGIN_PATH] [--smoke] (installed host or XYTRON_DESKTOP_HOST)\n"
     "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke]\n"
-    "  automatic browser host restore / desktop publish: NOT IMPLEMENTED\n";
+    "  publish --output dist/NAME (Windows WebView2 C++ local staging only)\n"
+    "  engine dependency restore / full redistributable publish: NOT IMPLEMENTED\n";
 }
 int main(int argc,char** argv) {
   try {
@@ -824,7 +825,10 @@ int main(int argc,char** argv) {
     }
     if(argc==4 && std::string(argv[1])=="publish"&&
        std::string(argv[2])=="--output") {
-      pluginPublish(argv[3]);return 0;
+      if(exists("xytron.json"))
+        xytron_cli::appPublishWebView2Local(argv[3]);
+      else pluginPublish(argv[3]);
+      return 0;
     }
     if(argc==8 && std::string(argv[1])=="bindings" &&
        std::string(argv[2])=="generate" &&

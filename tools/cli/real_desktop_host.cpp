@@ -50,6 +50,31 @@ HMENU makeNativeContextMenu();
 HACCEL makeNativeAccelerators();
 #endif
 
+#ifndef XYTRON_APP_HOST_CEF
+// For a *locally staged*, already-built Windows WebView2 C++ app, the real
+// native host executable is itself the entry point. Explicit --ui remains
+// mandatory in ordinary SDK/E2E host invocations without this marker.
+std::string localPortableRoot() {
+  char executable[MAX_PATH*4]={};
+  const DWORD length=GetModuleFileNameA(nullptr,executable,sizeof(executable));
+  if(!length || length>=sizeof(executable))
+    throw std::runtime_error("Cannot resolve local app executable directory");
+  const std::string full(executable,length);
+  const std::size_t slash=full.find_last_of("/\\");
+  if(slash==std::string::npos)
+    throw std::runtime_error("Cannot find local app executable directory");
+  const std::string root=full.substr(0,slash);
+  std::ifstream in((root+"/xytron.portable").c_str(),std::ios::binary);
+  if(!in)return std::string();
+  std::string marker,extra;
+  if(!std::getline(in,marker) ||
+     marker!="xytron-webview2-cpp-local-v1" ||
+     static_cast<bool>(std::getline(in,extra)))
+    throw std::runtime_error("Invalid local WebView2 app marker");
+  return root;
+}
+#endif
+
 std::string flag(int argc, char** argv, const std::string& prefix) {
   for (int i=1;i<argc;++i) {
     const std::string arg(argv[i]);
@@ -697,14 +722,33 @@ int main(int argc,char** argv) {
       return 0;
     }
 #endif
+    const std::string explicitUi=flag(argc,argv,"--ui=");
+    std::string portableRoot;
+#ifndef XYTRON_APP_HOST_CEF
+    portableRoot=localPortableRoot();
+#endif
     const std::string languageFlag=flag(argc,argv,"--backend-language=");
-    const std::string language=languageFlag.empty()?"cpp":languageFlag;
+    if(!portableRoot.empty() &&
+       (!explicitUi.empty() || !languageFlag.empty() ||
+        !flag(argc,argv,"--backend-plugin=").empty() ||
+        !flag(argc,argv,"--plugin-path=").empty()))
+      throw std::runtime_error("Local app forbids overriding its packaged backend/plugins");
+    const std::string language=portableRoot.empty()?
+        (languageFlag.empty()?"cpp":languageFlag):"cpp";
     if(language!="cpp"&&language!="python"&&language!="csharp")
       throw std::runtime_error("Unsupported Main language");
+    const std::string ui=portableRoot.empty()?explicitUi:
+        portableRoot+"/ui/index.html";
     const std::shared_ptr<nativeweb::AppResourceBundle> assets=
-        loadUi(flag(argc,argv,"--ui="),language);
-    const std::string backendPlugin=flag(argc,argv,"--backend-plugin=");
-    const std::string featurePlugin=flag(argc,argv,"--plugin-path=");
+        loadUi(ui,language);
+    const std::string backendPlugin=portableRoot.empty()?
+        flag(argc,argv,"--backend-plugin="):
+        portableRoot+"/bin/xytron_app_backend.dll";
+    std::string featurePlugin=flag(argc,argv,"--plugin-path=");
+    if(!portableRoot.empty()) {
+      std::ifstream feature((portableRoot+"/bin/feature.dll").c_str(),std::ios::binary);
+      if(feature)featurePlugin=portableRoot+"/bin/feature.dll";
+    }
     const std::string pythonRunner=flag(argc,argv,"--python-runner=");
     const std::string pythonProject=flag(argc,argv,"--python-project=");
     const std::string dotnetAssembly=flag(argc,argv,"--dotnet-assembly=");

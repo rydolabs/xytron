@@ -147,6 +147,75 @@ def run():
             raise AssertionError("Real native app E2E failed: exit={} missing={}".format(
                 rc,missing))
 
+        # Windows-only local staging vertical slice: publish the compiled
+        # first-party WebView2 host, user DLL, UI and native feature. Run from
+        # the output folder after hiding all corresponding project sources.
+        # No CEF binaries or commercial runtime redistributables are copied.
+        if args.engine=="webview2":
+            for unsafe in ("../outside", "dist/../outside", "dist/missing?name"):
+                rc,_=execute(base+["publish","--output",unsafe],project)
+                if rc==0: raise AssertionError("Unsafe local publication path accepted")
+            rc,published=execute(base+["publish","--output","dist/hello"],project)
+            if rc or "Windows WebView2 local app staging:" not in published:
+                raise AssertionError("Portable local WebView2 staging failed")
+            bundle=project/"dist/hello"
+            launcher=bundle/"launch.cmd"
+            staged_host=bundle/"xytron_desktop_host.exe"
+            staged_backend=bundle/"bin/xytron_app_backend.dll"
+            staged_feature=bundle/"bin/feature.dll"
+            built_backend=(project/".xytron-build/out/Release/xytron_app_backend.dll")
+            if not built_backend.is_file():
+                built_backend=project/".xytron-build/out/xytron_app_backend.dll"
+            marker=bundle/"xytron.portable"
+            if marker.read_bytes()!=b"xytron-webview2-cpp-local-v1\n":
+                raise AssertionError("Portable app identity marker missing")
+            if (not launcher.is_file() or staged_host.read_bytes()!=host.read_bytes()
+                or staged_backend.read_bytes()!=built_backend.read_bytes()
+                or staged_feature.read_bytes()!=feature.read_bytes()
+                or (bundle/"ui/index.html").read_bytes()!=
+                   (project/"ui/index.html").read_bytes()):
+                raise AssertionError("Published local bundle source bytes mismatch")
+            rc,_=execute(base+["publish","--output","dist/hello"],project)
+            if rc==0: raise AssertionError("Existing published bundle overwritten")
+            hidden=[]
+            try:
+                for original in (project/"ui/index.html", built_backend, feature):
+                    backup=original.with_name(original.name+".source-hidden")
+                    original.rename(backup)
+                    hidden.append((original,backup))
+                for mode,command in (
+                    ("direct native EXE", [str(staged_host),"--smoke"]),
+                    ("batch launcher", ["cmd.exe","/d","/c",str(launcher),"--smoke"]),
+                ):
+                    rc,portable_output=execute(command,bundle,timeout=140)
+                    for required in (
+                        "checkpoint: user-cpp-backend-and-feature-plugin",
+                        "checkpoint: plugin-native-js-event-unsubscribe",
+                        "checkpoint: win32-menu-js-subscriber-action-unsubscribe",
+                        "checkpoint: win32-context-js-subscriber-action-unsubscribe",
+                        "checkpoint: win32-exit-js-subscriber",
+                        "xytron native desktop host: PASS",
+                    ):
+                        if required not in portable_output:
+                            raise AssertionError(mode+" bundle missing "+required)
+                    if rc: raise AssertionError(mode+" bundle exit="+str(rc))
+                # The packaged EXE must not trust a malformed identity or
+                # allow a caller to replace its UI/backend arguments.
+                marker_backup=marker.read_bytes()
+                marker.write_bytes(b"CORRUPTED")
+                try:
+                    rc,_=execute([str(staged_host),"--smoke"],bundle)
+                    if rc==0: raise AssertionError("Tampered portable marker accepted")
+                finally:
+                    marker.write_bytes(marker_backup)
+                rc,_=execute([str(staged_host),"--ui=outside.html"],bundle)
+                if rc==0: raise AssertionError("Portable app allowed arbitrary UI override")
+                print("Windows direct EXE and batch local WebView2 staging smoke: PASS",
+                      flush=True)
+            finally:
+                for original,backup in reversed(hidden):
+                    backup.rename(original)
+
         # The host must never display an arbitrary external UI if app
         # validation is broken. Remove generated UI, then verify denial.
         ui=project/"ui"/"index.html"
