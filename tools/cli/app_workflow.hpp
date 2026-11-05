@@ -400,6 +400,13 @@ inline void appPublishWebView2Local(const std::string& target) {
   appCopyStagedFile(backend,target+"/bin/xytron_app_backend.dll",true);
   if(hasFeature)
     appCopyStagedFile(feature,target+"/bin/feature.dll",true);
+  checkedProjectOutput(target+"/xytron.portable",true);
+  std::ofstream marker((target+"/xytron.portable").c_str(),
+                       std::ios::binary|std::ios::trunc);
+  if(!marker)throw std::runtime_error("Cannot create local app identity marker");
+  marker<<"xytron-webview2-cpp-local-v1\n";
+  marker.close();
+  if(!marker)throw std::runtime_error("Cannot finalize local app marker");
   // No absolute development paths embedded: portable on the same machine
   // with an installed Evergreen WebView2 runtime and compatible VC runtime.
   checkedProjectOutput(target+"/launch.cmd",true);
