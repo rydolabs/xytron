@@ -40,4 +40,4 @@ jobs:
       - name: Build native Core, CLI, plugin fixtures and tests
         run: cmake --build build/a1-sanitize --parallel 3
       - name: Execute Core, Plugin and CLI regressions under sanitizers
-        run: ctest --test-dir build/a1-sanitize --output-on-failure --timeout 100 -R '^(core\\.|plugin\\.|cli\\.)'
+        run: ctest --test-dir build/a1-sanitize --output-on-failure --timeout 100 -R '^(core[.]|plugin[.]|cli[.])'
