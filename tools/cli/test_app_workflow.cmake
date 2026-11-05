@@ -27,7 +27,9 @@ foreach(backend cpp python csharp)
   command("${backend}_app" 0 build)
   command("${backend}_app" 0 test)
   command("${backend}_app" 0 doctor)
-  command("${backend}_app" 2 run)
+  # A Core-only SDK intentionally has no installed engine host. The
+  # default run path must fail explicitly rather than pretending to launch.
+  command("${backend}_app" 1 run)
   command("${backend}_app" 1 publish)
   if(NOT EXISTS "${TEST_ROOT}/${backend}_app/.xytron/core.lock")
     message(FATAL_ERROR "Missing Core SDK lock for ${backend}")
