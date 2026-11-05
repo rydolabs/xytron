@@ -368,6 +368,40 @@ loadUi(const std::string& name, const std::string& lang) {
     try { await xytron.app.Main.method.ping(handle); }
     catch(e) { denied=true; }
     if(!denied) throw new Error("Disposed managed handle remained accessible");
+
+    // A user-generated ABI-v1 C++ Plugin can be loaded next to Python OR
+    // C# Main and shares the exact native->JS callback/unsubscribe contract.
+    if (await xytron.app.featureSmokeEnabled()) {
+      if(await xytron.feature.hello()!=="hello")
+        throw new Error("Managed Main cannot call independent native feature");
+      let featureEvents=0;
+      let subscription=null;
+      const notified=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error("Mixed-language feature event timeout")),8000);
+        subscription=xytron.onMessage("feature.changed",payload=>{
+          ++featureEvents;
+          clearTimeout(timer);
+          resolve(payload);
+        });
+      });
+      if(await xytron.feature.fire()!=="published" ||
+         await notified!=="from-native-feature" || featureEvents!==1)
+        throw new Error("Mixed-language native plugin publisher failed");
+      if(!xytron.offMessage(subscription))
+        throw new Error("Mixed-language feature JS unsubscribe failed");
+      await xytron.feature.fire();
+      await new Promise(resolve=>setTimeout(resolve,200));
+      if(featureEvents!==1)
+        throw new Error("Feature event reached unsubscribed managed Main JS");
+      if(await xytron.app.unloadFeature()!==true)
+        throw new Error("Native feature refused safe unload alongside managed Main");
+      let featureRejected=false;
+      try {await xytron.feature.hello();} catch (_) {featureRejected=true;}
+      if(!featureRejected)
+        throw new Error("Unloaded feature callable remained accessible");
+      if(await xytron.app.featureVerified()!==true)
+        throw new Error("Mixed-language native feature checkpoint failed");
+    }
     await xytron.app.complete();
   } catch (error) {
     await xytron.app.fail(String(error));
@@ -387,15 +421,25 @@ public:
   Listener(nativeweb::WebView& webview,const std::string& lang,
            const std::string& pythonRunner,const std::string& pythonProject,
            const std::string& dotnetAssembly,
-           const std::vector<std::string>& managedOps)
+           const std::vector<std::string>& managedOps,bool featureEnabled)
       : webview_(webview), language_(lang), pythonRunner_(pythonRunner),
         pythonProject_(pythonProject), dotnetAssembly_(dotnetAssembly),
-        managedOps_(managedOps), ready_(false) {
+        managedOps_(managedOps), featureEnabled_(featureEnabled),ready_(false) {
     if(language_!="cpp")
       webview_.bind("app.managedReady",[this]() { return ready_.load(); });
     // app.ping now comes exclusively from user-authored backend/main.cpp
     // registered through ABI v1; never silently fall back to a host stub.
     if (smoke) {
+      webview_.bind("app.featureSmokeEnabled",[this]() {
+        return featureEnabled_;
+      });
+      webview_.bind("app.featureVerified",[this]() {
+        if(!featureEnabled_ || language_=="cpp")
+          throw nativeweb::Error("invalid_test_mode","No managed/native plugin fixture");
+        std::cout<<"checkpoint: managed-main-native-feature-verified-"
+                 <<language_<<std::endl;
+        return true;
+      });
       webview_.bind("app.complete",[this]() {
         verified=true;
         std::cout << "checkpoint: generated-app-js-native-pong" << std::endl;
@@ -536,6 +580,7 @@ private:
   nativeweb::WebView& webview_;
   std::string language_,pythonRunner_,pythonProject_,dotnetAssembly_;
   std::vector<std::string> managedOps_;
+  bool featureEnabled_;
   std::atomic<bool> ready_;
 };
 
@@ -769,7 +814,8 @@ int main(int argc,char** argv) {
     settings.log_severity=LOGSEVERITY_WARNING;
     nativeweb::detail::registerCefBackendFactory();
     nativeweb::WebView view;
-    Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,managedOps);
+    Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,
+                      managedOps,!featurePlugin.empty());
     view.setListener(&listener);
     if(language=="cpp" && view.loadPlugin(backendPlugin)!="app")
       throw std::runtime_error("C++ backend plugin ID mismatch");
@@ -798,7 +844,8 @@ int main(int argc,char** argv) {
     menuState.view=&view;
     SetWindowLongPtrW(window,GWLP_USERDATA,
         reinterpret_cast<LONG_PTR>(&menuState));
-    Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,managedOps);
+    Listener listener(view,language,pythonRunner,pythonProject,dotnetAssembly,
+                      managedOps,!featurePlugin.empty());
     view.setListener(&listener);
     if(language=="cpp" && view.loadPlugin(backendPlugin)!="app")
       throw std::runtime_error("C++ backend plugin ID mismatch");
