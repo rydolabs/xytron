@@ -796,7 +796,9 @@ static void help() {
     "  build / test / doctor (desktop project; backend-only)\n"
     "  run [--plugin PROJECT_PLUGIN_PATH] [--smoke] (installed host or XYTRON_DESKTOP_HOST)\n"
     "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke]\n"
-    "  automatic browser host restore / desktop publish: NOT IMPLEMENTED\n";
+    "  publish --local-only --host ABSOLUTE_ENGINE_HOST --output NAME [--plugin PATH]\n"
+    "    (developer test bundle; NO PUBLIC REDISTRIBUTION)\n"
+    "  automatic browser host restore / public desktop publish: NOT IMPLEMENTED\n";
 }
 int main(int argc,char** argv) {
   try {
@@ -815,6 +817,30 @@ int main(int argc,char** argv) {
        std::string(argv[2])=="plugin" &&
        (argc==4 || (argc==6 && std::string(argv[4])=="--lang"))) {
       newPlugin(argv[3],argc==4?"cpp":argv[5]);return 0;
+    }
+    if((argc==7 || argc==9) && std::string(argv[1])=="publish" &&
+       std::string(argv[2])=="--local-only" &&
+       std::string(argv[3])=="--host" &&
+       std::string(argv[5])=="--output" &&
+       (argc==7 || std::string(argv[7])=="--plugin") &&
+       exists("xytron.json")) {
+      const std::string name=argv[6];
+      if(!xytron_cli::projectIdentifier(name))
+        throw std::runtime_error("Unsafe local staging output name");
+      const std::string host=xytron_cli::normalizeSdk(argv[4]);
+      const std::string sdk=xytron_cli::restoredSdk();
+      const std::string feature=argc==9?argv[8]:"";
+      if(!feature.empty())xytron_cli::projectPath(feature,false);
+      xytron_cli::appBuild();
+      xytron_cli::appTest();
+      const std::string tool=sdk+"/share/xytron/cli/stage_local_bundle.py";
+      if(!exists(tool))
+        throw std::runtime_error("Installed SDK lacks local bundling tool");
+      std::string command="python \""+tool+"\" --host \""+host+
+        "\" --output "+name;
+      if(!feature.empty())command+=" --plugin "+feature;
+      xytron_cli::appCommand(command.c_str(),"Local desktop staging");
+      return 0;
     }
     if(argc==2 && std::string(argv[1])=="publish") {
       if(exists("xytron.json"))

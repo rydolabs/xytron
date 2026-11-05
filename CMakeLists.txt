@@ -98,7 +98,9 @@ target_include_directories(xytron PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(xytron PRIVATE nativeweb_core)
 target_compile_definitions(xytron PRIVATE
   XYTRON_CLI_DEV_TOOLS=\"${CMAKE_CURRENT_SOURCE_DIR}/tools/cli\")
-install(FILES tools/cli/generate_managed_bindings.py
+install(FILES
+    tools/cli/generate_managed_bindings.py
+    tools/cli/stage_local_bundle.py
   DESTINATION ${CMAKE_INSTALL_DATADIR}/xytron/cli)
 install(FILES tools/cli/dotnet_reflector/Program.cs
               tools/cli/dotnet_reflector/Xytron.Metadata.csproj

@@ -124,6 +124,43 @@ def run():
             raise AssertionError("Real native app E2E failed: exit={} missing={}".format(
                 rc,missing))
 
+        # The local-only bundle includes its own host runtime and project
+        # backend. Launch it without any SDK lock, CLI or source build step.
+        output_name="cpp_local"
+        publish=base+["publish","--local-only","--host",str(host),
+                      "--output",output_name,"--plugin",plugin_path]
+        rc,publish_output=execute(publish,project,timeout=180)
+        if rc:
+            raise AssertionError("C++ local-only staging failed: "+publish_output)
+        bundle=project/"dist"/output_name
+        launcher=bundle/("launch.cmd" if os.name=="nt" else "launch.sh")
+        if not launcher.is_file():
+            raise AssertionError("Local-only C++ launcher missing")
+        # The launcher must use paths inside the staged directory rather
+        # than expecting the user's source checkout or SDK/Core lock.
+        command=(["cmd.exe","/c",str(launcher),"--smoke"] if os.name=="nt"
+                 else [str(launcher),"--smoke"])
+        if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
+            command=["xvfb-run","-a"]+command
+        rc,bundle_output=execute(command,bundle,timeout=140)
+        # An installed local launcher runs the browser binary directly;
+        # the CLI-only "host completed" line is not part of that protocol.
+        bundle_markers=tuple(marker for marker in markers
+                             if marker!="Real browser app:// host completed successfully.")
+        bundle_markers+=("xytron native desktop host: PASS",)
+        missing=[marker for marker in bundle_markers if marker not in bundle_output]
+        if rc or missing or "bridge-fail:" in bundle_output:
+            raise AssertionError("C++ local-only bundle failed: "+str((rc,missing))+
+                                 "\n"+bundle_output[-1800:])
+        rc,_=execute(publish,project,timeout=60)
+        if rc==0:
+            raise AssertionError("Local-only staging overwrote an existing bundle")
+        invalid=base+["publish","--local-only","--host",str(host),
+                      "--output","../outside"]
+        rc,_=execute(invalid,project,timeout=30)
+        if rc==0:
+            raise AssertionError("Traversal bundle output was accepted")
+
         # The host must never display an arbitrary external UI if app
         # validation is broken. Remove generated UI, then verify denial.
         ui=project/"ui"/"index.html"
@@ -275,6 +312,30 @@ internal static class Program""")
             if rc or missing or "bridge-fail:" in output:
                 raise AssertionError(language+" actual browser worker failed: "+
                                      str((rc,missing)))
+            local_name="managed_"+language
+            publish=base+["publish","--local-only","--host",str(host),
+                          "--output",local_name,"--plugin",native_relative]
+            rc,publish_output=execute(publish,app,timeout=180)
+            if rc:
+                raise AssertionError(language+" local-only staging failed: "+publish_output)
+            bundle=app/"dist"/local_name
+            launcher=bundle/("launch.cmd" if os.name=="nt" else "launch.sh")
+            if not launcher.is_file():
+                raise AssertionError(language+" local-only launcher missing")
+            command=(["cmd.exe","/c",str(launcher),"--smoke"] if os.name=="nt"
+                     else [str(launcher),"--smoke"])
+            if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
+                command=["xvfb-run","-a"]+command
+            rc,bundle_output=execute(command,bundle,timeout=140)
+            bundle_markers=tuple(item for item in checkpoints
+                                 if item!="Real browser app:// host completed successfully.")
+            bundle_markers+=("xytron native desktop host: PASS",)
+            missing=[item for item in bundle_markers if item not in bundle_output]
+            if rc or missing or "bridge-fail:" in bundle_output:
+                raise AssertionError(language+" local-only bundle failed: "+
+                                     str((rc,missing))+"\n"+bundle_output[-1800:])
+            print("Generated {} local-only bundle actual {} browser: PASS".format(
+                language,args.engine),flush=True)
             print("Generated {} Main real {} JS E2E: PASS".format(
                 language,args.engine),flush=True)
 

@@ -140,7 +140,10 @@ void run(const std::string& python,const std::string& fixture){
  app.destroy();
  nativeweb::WebView late;late.create(0,"app://desktop/index.html",packed);
  late.bindManagedWorker("example_py",{"example_py.Player.create"},
-  {python,fixture,"stall"},150);
+  // Use a deadline well beyond interpreter startup on slow macOS CI.
+  // The fixture stalls after receiving the request; navigation must
+  // revoke the in-flight callback before that bounded deadline.
+  {python,fixture,"stall"},2500);
  Backend* backend=Backend::instance;unsigned n=backend->count();
  backend->listener->onVerifiedBridgeMessage(nativeweb::detail::makeRequestMessage(
   10,"example_py.Player.create",VariantList()),backend->caller);
