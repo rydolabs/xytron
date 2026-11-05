@@ -96,7 +96,10 @@ def run():
 
         # Pass a project-relative path. CLI checks every segment for links.
         plugin_path=str(feature.relative_to(project)).replace("\\","/")
-        command=base+["run","--host",str(host),"--plugin",plugin_path,"--smoke"]
+        # The CLI now discovers a locally installed host or an explicit
+        # trusted host override, without requiring --host on every invocation.
+        os.environ["XYTRON_DESKTOP_HOST"]=str(host)
+        command=base+["run","--plugin",plugin_path,"--smoke"]
         if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
             if not shutil.which("xvfb-run"):
                 raise AssertionError("Real CEF smoke requires DISPLAY or xvfb-run")

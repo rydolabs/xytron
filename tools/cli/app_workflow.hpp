@@ -277,6 +277,26 @@ inline std::string appBackendPlugin() {
   projectPath(path,false);
   return path;
 }
+// Locate a locally installed engine host; this does not download browser
+// binaries. Explicit --host remains supported for existing integration users.
+inline std::string appResolveBrowserHost() {
+  const std::string sdk=restoredSdk();
+  const char* configured=std::getenv("XYTRON_DESKTOP_HOST");
+  if(configured && *configured)
+    return normalizeSdk(configured);
+#ifdef _WIN32
+  const std::string filename="xytron_desktop_host.exe";
+#else
+  const std::string filename="xytron_desktop_host";
+#endif
+  const std::string installed=sdk+"/bin/"+filename;
+  if(!appExists(installed))
+    throw std::runtime_error(
+      "Browser host missing from installed SDK: "+installed+
+      "; install an engine-backed host, set XYTRON_DESKTOP_HOST, "
+      "or use xytron run --host ABSOLUTE_ENGINE_HOST");
+  return normalizeSdk(installed);
+}
 inline void appRunHost(const std::string& path, bool smoke,
                        const std::string& featurePath) {
   const std::string language=appMainLanguage();
