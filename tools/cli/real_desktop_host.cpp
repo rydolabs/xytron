@@ -358,7 +358,9 @@ private:
 enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402 };
 struct NativeMenuState {
   nativeweb::WebView* view;
-  NativeMenuState():view(nullptr){}
+  unsigned actions;
+  unsigned exits;
+  NativeMenuState():view(nullptr),actions(0),exits(0){}
 };
 LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
   NativeMenuState* state=reinterpret_cast<NativeMenuState*>(
@@ -366,6 +368,10 @@ LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
   if(message==WM_COMMAND && HIWORD(w)==0) {
     const unsigned command=LOWORD(w);
     if(command==XYTRON_MENU_ACTION || command==XYTRON_MENU_EXIT) {
+      if(state) {
+        if(command==XYTRON_MENU_ACTION)++state->actions;
+        else ++state->exits;
+      }
       if(state && state->view && state->view->isCreated())
         state->view->emit("app.menu",
             command==XYTRON_MENU_ACTION?std::string("action"):std::string("exit"));
@@ -442,6 +448,29 @@ int main(int argc,char** argv) {
     for(int i=1;i<argc;++i) {
       if (std::string(argv[i])=="--smoke") smoke=true;
     }
+#ifndef XYTRON_APP_HOST_CEF
+    // Win32-only runner check: menu resource and WM_COMMAND dispatch,
+    // without requiring WebView2 installation or a display screenshot.
+    if(argc==2 && std::string(argv[1])=="--menu-selftest") {
+      HWND testWindow=newWindow();
+      if(!testWindow)throw std::runtime_error("Win32 menu selftest: window");
+      HMENU bar=GetMenu(testWindow);
+      if(!bar || GetMenuItemCount(bar)!=1 ||
+         !GetSubMenu(bar,0) || GetMenuItemCount(GetSubMenu(bar,0))!=3)
+        throw std::runtime_error("Win32 menu selftest: menu structure");
+      NativeMenuState testState;
+      SetWindowLongPtrW(testWindow,GWLP_USERDATA,
+          reinterpret_cast<LONG_PTR>(&testState));
+      SendMessageW(testWindow,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_ACTION,0),0);
+      if(testState.actions!=1 || testState.exits!=0 || !IsWindow(testWindow))
+        throw std::runtime_error("Win32 menu selftest: action dispatch");
+      SendMessageW(testWindow,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_EXIT,0),0);
+      if(testState.exits!=1 || IsWindow(testWindow))
+        throw std::runtime_error("Win32 menu selftest: exit dispatch");
+      std::cout<<"Win32 native application menu selftest: PASS"<<std::endl;
+      return 0;
+    }
+#endif
     const std::string languageFlag=flag(argc,argv,"--backend-language=");
     const std::string language=languageFlag.empty()?"cpp":languageFlag;
     if(language!="cpp"&&language!="python"&&language!="csharp")
