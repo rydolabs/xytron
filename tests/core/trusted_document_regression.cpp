@@ -33,5 +33,26 @@ int main()
                                   "app://desktop/%2e%2e/etc/passwd", true));
     REQUIRE(!trustedEntryDocument("https://example.com/index.html",
                                   "https://example.com/index.html", true));
+    const char* ambiguous[] = {
+        "file:///C:/apps/../secrets.html",
+        "file:///C:/apps/./index.html",
+        "file:///C:/apps//index.html",
+        "file:////server/share/index.html",
+        "file:///C:/apps/index.html/",
+        "file:///C:/apps/%2e%2e/secrets.html",
+        "file:///C:/apps/%2E./secrets.html",
+        "file:///C:/apps/%2fsecrets.html",
+        "file:///C:/apps/%5csecrets.html",
+        "file:///C:/apps/%252e%252e/secrets.html",
+        "file:///C:/apps/%00secrets.html",
+        "file:///C:/apps/%zzsecrets.html",
+        "file:///C:/apps/index.html\\suffix"
+    };
+    for (std::size_t i=0; i<sizeof(ambiguous)/sizeof(ambiguous[0]); ++i)
+        REQUIRE(!trustedEntryDocument(ambiguous[i], ambiguous[i], true));
+    REQUIRE(trustedEntryDocument("file:///C:/Program%20Files/xytron/index.html",
+                                 "file:///C:/Program%20Files/xytron/index.html", true));
+    REQUIRE(trustedEntryDocument("file:///home/user/app/index.html",
+                                 "file:///home/user/app/index.html", true));
     return failures ? 1 : 0;
 }
