@@ -310,6 +310,8 @@ static void doctorSdk(const std::string& sdk) {
   std::cout<<"Note: browser engines, Python/.NET hosts and app packaging are NOT checked\n";
 }
 
+static void stageNativePlatformEntry(const std::string& base,
+                                     const std::string& id);
 static void pluginBuild(const std::string& id,const std::string& sdk) {
   if(!valid(id,true)) throw std::runtime_error("Invalid plugin id");
   if(!safeSdkPrefix(sdk))
@@ -326,6 +328,7 @@ static void pluginBuild(const std::string& id,const std::string& sdk) {
   const std::string compile="cmake --build \""+output+"\" --config Release";
   if(std::system(compile.c_str())!=0)
     throw std::runtime_error("CMake plugin build failed");
+  stageNativePlatformEntry(source+"/",id);
   std::cout<<"Xytron plugin build: PASS ("<<id<<")\n";
 }
 
@@ -460,6 +463,54 @@ static std::string nativeLibrary(const std::string& id) {
   return "lib"+id+".so";
 #endif
 }
+static void stageNativePlatformEntry(const std::string& base,
+                                     const std::string& id) {
+#if defined(_WIN32) || (defined(__linux__) && defined(__x86_64__))
+  const std::string binary=nativeLibrary(id);
+#ifdef _WIN32
+  const std::string built=base+"build/Release/"+binary;
+#else
+  const std::string built=base+"build/"+binary;
+#endif
+  // Reject symlink/reparse/hardlink substitutions before opening paths.
+  xytron_cli::projectPath(built,false);
+  dir(base+"bin",false);
+  xytron_cli::projectPath(base+"bin",true);
+  const std::string destinationDir=base+"bin/"+nativeRid();
+  dir(destinationDir,false);
+  xytron_cli::projectPath(destinationDir,true);
+  const std::string destination=destinationDir+"/"+binary;
+  xytron_cli::checkedProjectOutput(destination,false);
+  const std::string pending=destination+".stage";
+  xytron_cli::checkedProjectOutput(pending,true);
+  std::ifstream input(built.c_str(),std::ios::binary);
+  if(!input) throw std::runtime_error("Built plugin library missing: "+built);
+  std::ofstream output(pending.c_str(),std::ios::binary|std::ios::trunc);
+  if(!output) throw std::runtime_error("Cannot stage plugin library: "+pending);
+  output<<input.rdbuf();
+  output.close();
+  if(!output || input.bad()) {
+    std::remove(pending.c_str());
+    throw std::runtime_error("Plugin binary staging failed");
+  }
+#ifdef _WIN32
+  if(!MoveFileExA(pending.c_str(),destination.c_str(),
+                  MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)) {
+    std::remove(pending.c_str());
+    throw std::runtime_error("Cannot install staged plugin entry: "+destination);
+  }
+#else
+  if(std::rename(pending.c_str(),destination.c_str())!=0) {
+    std::remove(pending.c_str());
+    throw std::runtime_error("Cannot install staged plugin entry: "+destination);
+  }
+#endif
+  std::cout<<"Plugin platform entry staged: "<<destination<<"\n";
+#else
+  (void)base; (void)id;
+  // macOS is outside A1 native-plugin package targets. Keep the build usable.
+#endif
+}
 // This command loads and executes registration code from a *trusted local*
 // native library. Never invoke it on a downloaded/unverified plugin.
 static std::string tsType(nativeweb::detail::CallableTypeKind kind) {
@@ -556,6 +607,18 @@ static std::string cliSupportDir(const std::string& program) {
   if(exists(source+"/generate_managed_bindings.py"))return source;
 #endif
   throw std::runtime_error("Managed bindings support files missing; reinstall Xytron CLI");
+}
+// A CLI installed under PREFIX/bin may restore its own local Core SDK
+// without asking the user to provide the same prefix. A build-tree CLI
+// deliberately has no implicit SDK: keep --sdk for that scenario.
+static std::string installedCoreSdkForCli(const std::string& executable) {
+  const std::string support=cliSupportDir(executable);
+  const std::string suffix="/share/xytron/cli";
+  if(support.size()<=suffix.size() ||
+     support.compare(support.size()-suffix.size(),suffix.size(),suffix)!=0)
+    throw std::runtime_error(
+      "Default restore requires an installed Xytron CLI; use restore --sdk PREFIX");
+  return xytron_cli::normalizeSdk(support.substr(0,support.size()-suffix.size()));
 }
 static void generateManagedBindings(const std::string& out,bool trusted,
                                     const std::string& executable) {
@@ -667,6 +730,7 @@ static void pluginBuildCurrent(const std::string& sdk) {
     if(std::system(configure.c_str())!=0) throw std::runtime_error("CMake configure failed");
     if(std::system("cmake --build build --config Release")!=0)
       throw std::runtime_error("CMake build failed");
+    stageNativePlatformEntry("",spec.id);
   } else if(spec.runtime=="dotnet") {
     if(!sdk.empty()) throw std::runtime_error("--sdk is for native plugins only");
     if(std::system("dotnet build Plugin.csproj --configuration Release --output build")!=0)
@@ -728,9 +792,10 @@ static void help() {
     "  publish [--output DIR] (local archive copy, inside plugin project)\n"
     "  --help / --version\n"
     "  validate (inside a generated desktop project)\n"
-    "  restore --sdk INSTALLED_CORE_SDK (desktop project; Core only)\n"
+    "  restore [--sdk INSTALLED_CORE_SDK] (local Core SDK only; no downloads)\n"
     "  build / test / doctor (desktop project; backend-only)\n"
-    "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke] (C++/Python/C# app)\n"
+    "  run [--plugin PROJECT_PLUGIN_PATH] [--smoke] (installed host or XYTRON_DESKTOP_HOST)\n"
+    "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke]\n"
     "  automatic browser host restore / desktop publish: NOT IMPLEMENTED\n";
 }
 int main(int argc,char** argv) {
@@ -803,6 +868,9 @@ int main(int argc,char** argv) {
        std::string(argv[2])=="--sdk") {
       xytron_cli::appRestore(argv[3]);return 0;
     }
+    if(argc==2 && std::string(argv[1])=="restore" && exists("xytron.json")) {
+      xytron_cli::appRestore(installedCoreSdkForCli(argv[0]));return 0;
+    }
     if(argc==2 && std::string(argv[1])=="test" && exists("xytron.json")) {
       xytron_cli::appTest();return 0;
     }
@@ -820,9 +888,18 @@ int main(int argc,char** argv) {
                              argc>=6?argv[5]:"");
       return 0;
     }
-    if(argc==2 && std::string(argv[1])=="run" && exists("xytron.json")) {
-      std::cerr<<"Desktop run unavailable: native shell and browser engine not integrated\n";
-      return 2;
+    // Build the actual user backend before running with the locally
+    // installed host (or an explicit developer override). No engine download.
+    if(argc>=2 && std::string(argv[1])=="run" && exists("xytron.json") &&
+       (argc==2 ||
+        (argc==3 && std::string(argv[2])=="--smoke") ||
+        (argc==4 && std::string(argv[2])=="--plugin") ||
+        (argc==5 && std::string(argv[2])=="--plugin" &&
+         std::string(argv[4])=="--smoke"))) {
+      const std::string host=xytron_cli::appResolveBrowserHost();
+      xytron_cli::appBuild();
+      xytron_cli::appRunHost(host,argc==3 || argc==5,argc>=4?argv[3]:"");
+      return 0;
     }
     if(argc==4&&std::string(argv[1])=="doctor"&&
        std::string(argv[2])=="--sdk") {

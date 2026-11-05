@@ -78,11 +78,11 @@ def run():
             rc,output=execute(base+argv,project)
             if rc: raise AssertionError("Feature plugin scaffold/build failed: "+" ".join(argv))
         if os.name=="nt":
-            feature=project/"plugins/feature/build/Release/feature.dll"
+            feature=project/"plugins/feature/bin/win-x64/feature.dll"
         elif sys.platform=="darwin":
             feature=project/"plugins/feature/build/libfeature.dylib"
         else:
-            feature=project/"plugins/feature/build/libfeature.so"
+            feature=project/"plugins/feature/bin/linux-x64/libfeature.so"
         if not feature.is_file():
             raise AssertionError("Built feature ABI plugin missing: "+str(feature))
         # Fail closed when a missing feature binary is explicitly requested.
@@ -96,7 +96,10 @@ def run():
 
         # Pass a project-relative path. CLI checks every segment for links.
         plugin_path=str(feature.relative_to(project)).replace("\\","/")
-        command=base+["run","--host",str(host),"--plugin",plugin_path,"--smoke"]
+        # The CLI now discovers a locally installed host or an explicit
+        # trusted host override, without requiring --host on every invocation.
+        os.environ["XYTRON_DESKTOP_HOST"]=str(host)
+        command=base+["run","--plugin",plugin_path,"--smoke"]
         if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
             if not shutil.which("xvfb-run"):
                 raise AssertionError("Real CEF smoke requires DISPLAY or xvfb-run")
