@@ -99,6 +99,15 @@ def run():
         # The CLI now discovers a locally installed host or an explicit
         # trusted host override, without requiring --host on every invocation.
         os.environ["XYTRON_DESKTOP_HOST"]=str(host)
+        rc,diagnostic=execute(base+["doctor","--runtime"],project)
+        if rc or "Desktop runtime preflight PASS:" not in diagnostic:
+            raise AssertionError("Installed real browser host runtime preflight failed")
+        os.environ["XYTRON_DESKTOP_HOST"]=str(folder/"missing-engine-host")
+        try:
+            rc,_=execute(base+["doctor","--runtime"],project)
+            if rc==0: raise AssertionError("Missing engine host passed runtime preflight")
+        finally:
+            os.environ["XYTRON_DESKTOP_HOST"]=str(host)
         command=base+["run","--plugin",plugin_path,"--smoke"]
         if args.engine=="cef" and sys.platform.startswith("linux") and not os.getenv("DISPLAY"):
             if not shutil.which("xvfb-run"):
@@ -205,6 +214,9 @@ internal static class Program""")
             for step in (["restore","--sdk",str(sdk)], ["build"], ["test"]):
                 rc,_=execute(base+step,app)
                 if rc: raise AssertionError(language+" app "+step[0]+" failed")
+            rc,diagnostic=execute(base+["doctor","--runtime"],app)
+            if rc or "Desktop runtime preflight PASS:" not in diagnostic:
+                raise AssertionError(language+" real runtime doctor failed")
             grants=app/".xytron-build/managed_operations.txt"
             operations=grants.read_text(encoding="utf-8").splitlines()
             expected={
@@ -234,6 +246,8 @@ internal static class Program""")
             backup=required.with_name(required.name+".bak")
             required.rename(backup)
             try:
+                rc,_=execute(base+["doctor","--runtime"],app)
+                if rc==0: raise AssertionError(language+" missing Main passed doctor")
                 rc,_=execute(base+["run","--host",str(host),"--smoke"],app)
                 if rc==0: raise AssertionError(language+" missing Main accepted")
             finally:

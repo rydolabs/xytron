@@ -794,6 +794,7 @@ static void help() {
     "  validate (inside a generated desktop project)\n"
     "  restore [--sdk INSTALLED_CORE_SDK] (local Core SDK only; no downloads)\n"
     "  build / test / doctor (desktop project; backend-only)\n"
+    "  doctor --runtime (installed host, UI and actual built backend preflight)\n"
     "  run [--plugin PROJECT_PLUGIN_PATH] [--smoke] (installed host or XYTRON_DESKTOP_HOST)\n"
     "  run --host ABSOLUTE_ENGINE_HOST [--plugin PROJECT_PLUGIN_PATH] [--smoke]\n"
     "  automatic browser host restore / desktop publish: NOT IMPLEMENTED\n";
@@ -876,6 +877,10 @@ int main(int argc,char** argv) {
     }
     if(argc==2 && std::string(argv[1])=="doctor" && exists("xytron.json")) {
       xytron_cli::appDoctor();return 0;
+    }
+    if(argc==3 && std::string(argv[1])=="doctor" &&
+       std::string(argv[2])=="--runtime" && exists("xytron.json")) {
+      xytron_cli::appDoctorRuntime();return 0;
     }
     if((argc==4 || argc==5 || argc==6 || argc==7) &&
        std::string(argv[1])=="run" &&

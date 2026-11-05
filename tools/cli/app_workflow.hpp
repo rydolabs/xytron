@@ -297,6 +297,52 @@ inline std::string appResolveBrowserHost() {
       "or use xytron run --host ABSOLUTE_ENGINE_HOST");
   return normalizeSdk(installed);
 }
+// Independent, non-executing host preflight. Engine loaders/resources still
+// need the real browser E2E; an existing binary is NOT release certification.
+inline void appCheckBrowserHost(const std::string& host) {
+  struct stat st={};
+  if(stat(host.c_str(),&st)!=0)
+    throw std::runtime_error("Desktop browser host missing: "+host);
+#ifdef _WIN32
+  if(!(st.st_mode&_S_IFREG))
+    throw std::runtime_error("Desktop browser host is not a regular file: "+host);
+  const DWORD attributes=GetFileAttributesA(host.c_str());
+  if(attributes==INVALID_FILE_ATTRIBUTES ||
+     (attributes & (FILE_ATTRIBUTE_DIRECTORY|FILE_ATTRIBUTE_REPARSE_POINT)))
+    throw std::runtime_error("Desktop browser host is not a local regular binary");
+  if(host.size()<4 || host.substr(host.size()-4)!=".exe")
+    throw std::runtime_error("Desktop browser host must be a Windows executable");
+#else
+  if(!S_ISREG(st.st_mode) || access(host.c_str(),X_OK)!=0)
+    throw std::runtime_error("Desktop browser host is not an executable regular file: "+host);
+#endif
+}
+// Stronger than Core-only 'doctor': checks the exact local executable and
+// built app inputs used by appRunHost, without launching a GUI or downloading.
+inline void appDoctorRuntime() {
+  appDoctor();
+  const std::string lang=appMainLanguage();
+  const std::string sdk=restoredSdk();
+  const std::string host=appResolveBrowserHost();
+  appCheckBrowserHost(host);
+  projectPath("ui/index.html",false);
+  if(lang=="cpp") {
+    (void)appBackendPlugin();
+  } else {
+    projectPath(".xytron-build/managed_operations.txt",false);
+    if(lang=="python") {
+      projectPath("backend/main.py",false);
+      if(!appExists(sdk+"/share/xytron/python/app_worker.py"))
+        throw std::runtime_error("Installed Python Main worker missing from SDK");
+    } else {
+      projectPath(".xytron-build/dotnet/MainBackend.dll",false);
+      projectPath(".xytron-build/dotnet/MainBackend.runtimeconfig.json",false);
+    }
+  }
+  std::cout<<"Desktop runtime preflight PASS: "<<host<<" ("<<lang<<")\n"
+           <<"Binary/UI/backend checked; browser engine initialization, OS native "
+              "menus, sandbox and redistribution remain E2E/release gates.\n";
+}
 inline void appRunHost(const std::string& path, bool smoke,
                        const std::string& featurePath) {
   const std::string language=appMainLanguage();
@@ -318,18 +364,12 @@ inline void appRunHost(const std::string& path, bool smoke,
     projectPath(".xytron-build/dotnet/MainBackend.runtimeconfig.json",false);
   }
   const std::string host=normalizeSdk(path);
-  struct stat st;
-  if(stat(host.c_str(),&st)!=0)
-    throw std::runtime_error("Explicit native browser host is missing");
+  appCheckBrowserHost(host);
 #ifdef _WIN32
-  if(!(st.st_mode&_S_IFREG))
-    throw std::runtime_error("Browser host is not a regular executable");
   char project[MAX_PATH*3]={};
   if(!GetCurrentDirectoryA(sizeof(project),project))
     throw std::runtime_error("Cannot resolve app project directory");
 #else
-  if(!S_ISREG(st.st_mode))
-    throw std::runtime_error("Browser host is not a regular executable");
   char project[PATH_MAX]={};
   if(!getcwd(project,sizeof(project)))
     throw std::runtime_error("Cannot resolve app project directory");
