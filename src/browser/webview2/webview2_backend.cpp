@@ -211,13 +211,40 @@ void WebView2Backend::create(
     checkHresult(options4->SetCustomSchemeRegistrations(1, schemes),
                  "SetCustomSchemeRegistrations");
 
+    // A local-only bundle should not create its mutable WebView2 profile
+    // inside its relocatable runtime directory. The host explicitly sets
+    // this environment variable to an app-scoped LOCALAPPDATA folder.
+    // Internal destructive-test isolation retains higher priority.
+    std::wstring explicitProfile;
+    if(isolatedUserDataFolderForTest_.empty()) {
+        const DWORD needed=GetEnvironmentVariableW(
+            L"XYTRON_WEBVIEW2_PROFILE_DIR",NULL,0);
+        if(needed>0) {
+            if(needed>32768)
+                throw Error("invalid_webview2_profile","WebView2 profile path too long");
+            std::vector<wchar_t> buf(needed,L'\\0');
+            const DWORD actual=GetEnvironmentVariableW(
+                L"XYTRON_WEBVIEW2_PROFILE_DIR",&buf[0],needed);
+            if(actual==0 || actual>=needed)
+                throw Error("invalid_webview2_profile","Cannot read WebView2 profile path");
+            explicitProfile.assign(&buf[0],actual);
+            // Only accept absolute drive paths; do not let an untrusted
+            // relative profile accidentally resolve beneath the app bundle.
+            if(explicitProfile.size()<4 || explicitProfile[1]!=L':' ||
+               (explicitProfile[2]!=L'\\\\' && explicitProfile[2]!=L'/') ||
+               explicitProfile.find(L'\\0')!=std::wstring::npos)
+                throw Error("invalid_webview2_profile","Profile path must be absolute");
+        }
+    }
+    const wchar_t* profilePath=!isolatedUserDataFolderForTest_.empty()?
+        isolatedUserDataFolderForTest_.c_str():
+        explicitProfile.empty()?NULL:explicitProfile.c_str();
     CreateState state;
 
     const HRESULT createResult =
         CreateCoreWebView2EnvironmentWithOptions(
             0,
-            isolatedUserDataFolderForTest_.empty() ? 0 :
-                isolatedUserDataFolderForTest_.c_str(),
+            profilePath,
             environmentOptions.Get(),
             Microsoft::WRL::Callback<
                 ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
