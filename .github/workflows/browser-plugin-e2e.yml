@@ -156,6 +156,9 @@ jobs:
       - name: Build WebView2 integration and plugin fixture
         shell: pwsh
         run: cmake --build build/webview2 --config Release --parallel 4
+      - name: Verify native Win32 app menu and WM_COMMAND callbacks
+        shell: pwsh
+        run: build/webview2/bin/xytron_desktop_host.exe --menu-selftest
       - name: Run real browser plugin E2E
         shell: pwsh
         run: ctest --test-dir build/webview2 -C Release -R '^browser\.' --output-on-failure
