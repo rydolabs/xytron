@@ -258,8 +258,11 @@ public:
 
     void destroy()
     {
-        revokeManagedWorkers();
+        // Invalidate the navigation epoch BEFORE worker shutdown: a worker
+        // can finish or fail concurrently with process termination, and a
+        // prior-generation response must never reach a new JS document.
         invalidateDocument();
+        revokeManagedWorkers();
         detachResponseSink();
         objects_->stop();
         runtime_.shutdown();
@@ -270,8 +273,11 @@ public:
 
     void shutdown()
     {
-        revokeManagedWorkers();
+        // Invalidate the navigation epoch BEFORE worker shutdown: a worker
+        // can finish or fail concurrently with process termination, and a
+        // prior-generation response must never reach a new JS document.
         invalidateDocument();
+        revokeManagedWorkers();
         detachResponseSink();
         objects_->stop();
         runtime_.shutdown();
@@ -314,15 +320,21 @@ public:
 
     void load(const std::string& source)
     {
-        revokeManagedWorkers();
+        // Invalidate the navigation epoch BEFORE worker shutdown: a worker
+        // can finish or fail concurrently with process termination, and a
+        // prior-generation response must never reach a new JS document.
         invalidateDocument();
+        revokeManagedWorkers();
         requireBackend()->load(source);
     }
 
     void reload()
     {
-        revokeManagedWorkers();
+        // Invalidate the navigation epoch BEFORE worker shutdown: a worker
+        // can finish or fail concurrently with process termination, and a
+        // prior-generation response must never reach a new JS document.
         invalidateDocument();
+        revokeManagedWorkers();
         requireBackend()->reload();
     }
 
@@ -589,8 +601,11 @@ public:
 
     void onLoadStarted(const std::string& source) override
     {
-        revokeManagedWorkers();
+        // Invalidate the navigation epoch BEFORE worker shutdown: a worker
+        // can finish or fail concurrently with process termination, and a
+        // prior-generation response must never reach a new JS document.
         invalidateDocument();
+        revokeManagedWorkers();
         if (listener_)
             listener_->onLoadStarted(source);
     }
@@ -683,8 +698,11 @@ public:
 
     void onBrowserClosed() override
     {
-        revokeManagedWorkers();
+        // Invalidate the navigation epoch BEFORE worker shutdown: a worker
+        // can finish or fail concurrently with process termination, and a
+        // prior-generation response must never reach a new JS document.
         invalidateDocument();
+        revokeManagedWorkers();
         detachResponseSink();
         runtime_.shutdown();
         objects_->stop();
