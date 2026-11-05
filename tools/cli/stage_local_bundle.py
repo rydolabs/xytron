@@ -173,7 +173,7 @@ def local_bundle(app: Path, host: Path, output_name: str, plugin: str):
                    'if not defined LOCALAPPDATA set "LOCALAPPDATA=%TEMP%"\r\n'
                    'set "WEBVIEW2_USER_DATA_FOLDER=%LOCALAPPDATA%\\Xytron\\' +
                    app_id + '\\' + output_name + '\\WebView2"\r\n'
-                   'set "XYTRON_WEBVIEW2_PROFILE_DIR=%WEBVIEW2_USER_DATA_FOLDER%"\\r\\n'
+                   'set "XYTRON_WEBVIEW2_PROFILE_DIR=%WEBVIEW2_USER_DATA_FOLDER%"\r\n'
                    'if not exist "%WEBVIEW2_USER_DATA_FOLDER%" mkdir "%WEBVIEW2_USER_DATA_FOLDER%" >nul 2>&1\r\n'
                    'pushd "%ROOT%runtime"\r\n'
                    '"%ROOT%runtime\\xytron_desktop_host.exe" ' +
