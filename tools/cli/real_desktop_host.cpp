@@ -36,6 +36,14 @@ namespace {
 bool smoke = false;
 std::string problem;
 bool verified = false;
+#ifndef XYTRON_APP_HOST_CEF
+// UI-thread WM_COMMAND dispatch is the only source of the menu E2E counter.
+// Posting a command from the JS-facing method uses the same path as an
+// actual application-menu selection (without GUI automation or mouse races).
+enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402 };
+HWND menuProbeWindow=nullptr;
+std::atomic<unsigned> nativeMenuActions(0);
+#endif
 
 std::string flag(int argc, char** argv, const std::string& prefix) {
   for (int i=1;i<argc;++i) {
@@ -180,6 +188,37 @@ loadUi(const std::string& name, const std::string& lang) {
     catch (_) { rejected=true; }
     if (!rejected)
       throw new Error("Unloaded plugin callable was still exposed to JS");
+    // Only WebView2 has the Win32 app shell. Verify that a *real* window
+    // WM_COMMAND travels through native WebView::emit to the JS subscriber.
+    if (window.chrome && window.chrome.webview) {
+      let menuEvents=0;
+      let token=null;
+      const menuReceived=new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error("Native menu event timed out")),8000);
+        token=xytron.onMessage("app.menu",payload=>{
+          ++menuEvents;
+          clearTimeout(timer);
+          resolve(payload);
+        });
+      });
+      if(await xytron.app.menuProbeTrigger()!==true)
+        throw new Error("Unable to request native Win32 menu selection");
+      if(await menuReceived!=="action" || menuEvents!==1)
+        throw new Error("Real native menu event was not delivered to JS");
+      if(await xytron.app.menuProbeCount()!==1)
+        throw new Error("JS callback was not preceded by native WM_COMMAND");
+      if(!xytron.offMessage(token))
+        throw new Error("Native menu JS subscription removal failed");
+      if(await xytron.app.menuProbeTrigger()!==true)
+        throw new Error("Second native menu command not posted");
+      for(let i=0;i<50 && await xytron.app.menuProbeCount()!==2;i++)
+        await new Promise(resolve=>setTimeout(resolve,20));
+      await new Promise(resolve=>setTimeout(resolve,200));
+      if(menuEvents!==1 || await xytron.app.menuProbeCount()!==2)
+        throw new Error("Unsubscribed JS callback still received native menu event");
+      if(await xytron.app.menuProbeVerified()!==true)
+        throw new Error("Native menu action verification failed");
+    }
     await xytron.app.complete();
   } catch (error) {
     await xytron.app.fail(String(error));
@@ -289,6 +328,31 @@ public:
         webview_.destroy();
         return true;
       });
+#ifndef XYTRON_APP_HOST_CEF
+      // This call is made only AFTER JS subscribes. It posts a real Win32
+      // command to the actual owner HWND, where hostProc invokes WebView::emit.
+      webview_.bind("app.menuProbeTrigger",[]() {
+        const HWND hwnd=menuProbeWindow;
+        if(!hwnd || !IsWindow(hwnd))
+          throw nativeweb::Error("menu_unavailable","Native window not available");
+        HMENU bar=GetMenu(hwnd);
+        HMENU menu=bar?GetSubMenu(bar,0):nullptr;
+        if(!menu || GetMenuItemID(menu,0)!=XYTRON_MENU_ACTION)
+          throw nativeweb::Error("menu_unavailable","Native App menu item missing");
+        if(!PostMessageW(hwnd,WM_COMMAND,MAKEWPARAM(XYTRON_MENU_ACTION,0),0))
+          throw nativeweb::Error("menu_unavailable","Cannot post native App menu command");
+        return true;
+      });
+      webview_.bind("app.menuProbeCount",[]() {
+        return static_cast<int>(nativeMenuActions.load());
+      });
+      webview_.bind("app.menuProbeVerified",[]() {
+        if(nativeMenuActions.load()!=2)
+          throw nativeweb::Error("menu_unverified","Native WM_COMMAND count mismatch");
+        std::cout<<"checkpoint: win32-menu-js-subscriber-action-unsubscribe"<<std::endl;
+        return true;
+      });
+#endif
       webview_.bind("app.unloadFeature",[this]() {
         webview_.unloadPlugin("feature");
         std::cout << "checkpoint: feature-plugin-unloaded" << std::endl;
@@ -355,7 +419,6 @@ private:
 #ifndef XYTRON_APP_HOST_CEF
 // Real Win32 application/context menus; native action callbacks are sent to
 // the app:// document through the existing native-to-JS message channel.
-enum { XYTRON_MENU_ACTION=0x7401, XYTRON_MENU_EXIT=0x7402 };
 struct NativeMenuState {
   nativeweb::WebView* view;
   unsigned actions;
@@ -369,8 +432,11 @@ LRESULT CALLBACK hostProc(HWND wnd,UINT message,WPARAM w,LPARAM p) {
     const unsigned command=LOWORD(w);
     if(command==XYTRON_MENU_ACTION || command==XYTRON_MENU_EXIT) {
       if(state) {
-        if(command==XYTRON_MENU_ACTION)++state->actions;
-        else ++state->exits;
+        if(command==XYTRON_MENU_ACTION) {
+          ++state->actions;
+          ++nativeMenuActions;
+          if(smoke)std::cout<<"checkpoint: native-win32-menu-command-action"<<std::endl;
+        } else ++state->exits;
       }
       if(state && state->view && state->view->isCreated())
         state->view->emit("app.menu",
@@ -519,6 +585,8 @@ int main(int argc,char** argv) {
     HWND window=newWindow();
     if (!window) throw std::runtime_error("Cannot create Win32 window");
     NativeMenuState menuState;
+    menuProbeWindow=window;
+    nativeMenuActions.store(0);
     nativeweb::detail::registerWebView2BackendFactory();
     nativeweb::WebView view;
     menuState.view=&view;
