@@ -437,7 +437,8 @@ inline void appRunHost(const std::string& path, bool smoke,
   const std::string backendPath=language=="cpp"?appBackendPlugin():std::string();
   if(language!="cpp") projectPath(".xytron-build/managed_operations.txt",false);
   if(!featurePath.empty()) {
-    if(language!="cpp") throw std::runtime_error("Native feature plugin run is C++-only in this slice");
+    // Independent native Plugin delivery is language-agnostic. The same
+    // trusted C ABI module can run beside Python or C# Main workers.
     projectPath(featurePath,false);
   }
   if(language=="python") {
