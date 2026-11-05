@@ -139,14 +139,19 @@ void run(const std::string& python,const std::string& fixture){
  CHECK(call(9,"example_py.Player.create",name).errorCode=="method_not_found");
  app.destroy();
  nativeweb::WebView late;late.create(0,"app://desktop/index.html",packed);
+ // Give the interpreter cold start time under heavily shared macOS CI,
+ // without relaxing the native 2s response deadline or allowing retries.
  late.bindManagedWorker("example_py",{"example_py.Player.create"},
-  {python,fixture,"stall"},150);
+  {python,fixture,"stall"},2000);
  Backend* backend=Backend::instance;unsigned n=backend->count();
  backend->listener->onVerifiedBridgeMessage(nativeweb::detail::makeRequestMessage(
   10,"example_py.Player.create",VariantList()),backend->caller);
  std::this_thread::sleep_for(std::chrono::milliseconds(55));
  backend->reload();
- CHECK(backend->wait(n,500).empty());
+ // The stall fixture sleeps for 3s. Wait beyond the 2s worker timeout
+ // to detect any late error/result delivered from a revoked navigation.
+ // Unlike a short 500ms silence check, this tests actual stale completion.
+ CHECK(backend->wait(n,2500).empty());
  late.destroy();
 }
 }
